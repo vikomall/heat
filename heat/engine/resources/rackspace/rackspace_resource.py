@@ -90,6 +90,8 @@ class RackspaceResource(resource.Resource):
         return self._cloud_nw
 
     def __authenticate(self):
+        #TODO: currently implemenation shown below authenticates using
+        # username and password. Need make it work with auth-token
         cls = self.pyrax.utils.import_class('pyrax.identity.rax_identity.RaxIdentity')
         self.pyrax.identity = cls()
         logger.info("Authenticating with username:%s" % self.context.username)
@@ -97,4 +99,3 @@ class RackspaceResource(resource.Resource):
                                    password=self.context.password)
         logger.info("User %s authenticated successfully."
                     % self.context.username)
-        

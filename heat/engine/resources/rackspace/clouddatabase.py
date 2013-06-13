@@ -109,8 +109,6 @@ class CloudDBInstance(rackspace_resource.RackspaceResource):
         self.flavor = self.properties['FlavorRef']
         self.volume = self.properties['VolumeSize']
         
-        #import pdb
-        #pdb.set_trace()
         self.databases  = []
         self.databases = self.properties['Databases']
         self.users = []
@@ -123,20 +121,7 @@ class CloudDBInstance(rackspace_resource.RackspaceResource):
                                           volume=self.volume)
         if instance is not None:
             self.resource_id_set(instance.id)
-        print "Name:", instance.name
-        print "ID:", instance.id
-        print "Status:", instance.status
-        print "Flavor:", instance.flavor.name
-        print "Volume:", instance.volume.size
-        
-        #self.pyrax.utils.wait_until(instance, 
-                               #"status", 
-                               #["ACTIVE", "ERROR"], 
-                               #callback=dbinstancecallback, 
-                               #interval=5,
-                               #verbose=True,
-                               #verbose_atts="progress")
-
+ 
         return instance
 
     def check_create_complete(self, instance):
@@ -152,8 +137,6 @@ class CloudDBInstance(rackspace_resource.RackspaceResource):
 
         logger.info("SQL instance %s created (flavor:%s, volume:%s)" % 
                      (self.sqlinstancename, self.flavor, self.volume))
-        #import pdb
-        #pdb.set_trace()
         try:
             # create databases
             for database in self.databases:
