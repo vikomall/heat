@@ -1,8 +1,23 @@
+# vim: tabstop=4 shiftwidth=4 softtabstop=4
+
+#
+#    Licensed under the Apache License, Version 2.0 (the "License"); you may
+#    not use this file except in compliance with the License. You may obtain
+#    a copy of the License at
+#
+#         http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+#    License for the specific language governing permissions and limitations
+#    under the License.
+
 from heat.engine import resource
 from heat.engine import clients
 from heat.engine import resource
 from heat.common import exception
-from heat.engine.resources.rackspace import rackspaceresoure
+from heat.engine.resources.rackspace import rackspace_resource
 import exceptions as exc
 
 from heat.openstack.common import log as logging
@@ -10,11 +25,11 @@ from heat.openstack.common import log as logging
 logger = logging.getLogger(__name__)
 
 
-class CloudDatabase(rackspaceresource.RackspaceResource):
+class CloudDBInstance(rackspace_resource.RackspaceResource):
     database_schema = {
         "character_set": {
             "Type": "String",
-            "Default":" utf8",
+            "Default": "utf8",
             "Required": False
         },
         "collate": {
@@ -34,7 +49,6 @@ class CloudDatabase(rackspaceresource.RackspaceResource):
             "Required": False
         },
         "password": {
-            "NoEcho": True,
             "Type":"String",
             "Required": False
         },
@@ -43,16 +57,15 @@ class CloudDatabase(rackspaceresource.RackspaceResource):
             "Default": "%"
         },
         "databases": {
-            'Type': 'List',
-            'Required': False
+            "Type": "List",
+            "Required": False
         }
     }
 
     properties_schema = {
         "InstanceName": {
             "Type": "String",
-            "Required": True,
-            "MaxLength": 255
+            "Required": True
         },
 
         "FlavorRef": {
@@ -67,31 +80,6 @@ class CloudDatabase(rackspaceresource.RackspaceResource):
             "Required":True
         },
         
-        #"DBName": {
-            #"Type": "String",
-            #"Required": False
-        #},
-
-        #"DBUserName":{
-            #"Type":"String",
-            #"Required": False
-        #},
-        
-        #"DBPassword":{
-            #"Type":"String",
-            #"Required":True            
-        #},
-        
-        "RackspaceUserName":{
-            "Type":"String",
-            "Required":True
-        },
-
-        "RackspaceApiKey":{
-            "Type":"String",
-            "Required":True
-        },
-
         "Databases": {
             'Type': 'List',
             'Required': False,
@@ -110,45 +98,29 @@ class CloudDatabase(rackspaceresource.RackspaceResource):
             }
         },
     }
-    #check schema with cloud db API reference
     
         
     def __init__(self, name, json_snippet, stack):
-        super(CloudDatabase, self).__init__(name, json_snippet, stack)
-        print "============CLOUDDBInstance-INIT=================="
+        super(CloudDBInstance, self).__init__(name, json_snippet, stack)
 
-    def handle_create(self):       
-        def dbinstancecallback(instance):
-            print "/////////////////CREATE-complete-callback-BEGIN////////////////////////"
-            # create database
-            dbs = [dbname]
-            instance.create_database(dbname)
-
-             #add users to database
-            instance.create_user(dbusername, dbpassword, dbs)
-            logger.debug("SUCCESS: Cloud database %s created" % instance.name)            
-            print "//////////////////CREATE-complete-callback-END////////////////////////"
-            self.create_complete = True
-
-        print "//////////////handle-create////////////////"
-        sqlinstancename = self.properties['SQLInstanceName'] 
-        flavor = self.properties['FlavorRef']
-        volume = self.properties['VolumeSize']
-        self.dbname  = self.properties['DBName']
-        self.dbusername = self.properties['DBUserName']
-        self.dbpassword = self.properties['DBPassword']
-        self.rsusername = self.properties['RackspaceUserName']
-        self.rsapikey =  self.properties['RackspaceApiKey']
+    def handle_create(self):
+        logger.debug("CloudDatabase handle_create called")
+        self.sqlinstancename = self.properties['InstanceName'] 
+        self.flavor = self.properties['FlavorRef']
+        self.volume = self.properties['VolumeSize']
         
-        import pdb
-        pdb.set_trace()
-        #self.authenticate()
+        #import pdb
+        #pdb.set_trace()
+        self.databases  = []
+        self.databases = self.properties['Databases']
+        self.users = []
+        self.users = self.properties['Users']
 
         # create db instance
-        self.create_complete = False
-        #cdb = self.pyrax.cloud_databases
-        logger.debug("Creating could db instance %s" % instance.name)
-        instance =  self.cloud_db.create(sqlinstancename, flavor=flavor, volume=volume)
+        logger.info("Creating could db instance %s" % self.sqlinstancename)
+        instance = self.cloud_db().create(self.sqlinstancename, 
+                                          flavor=self.flavor, 
+                                          volume=self.volume)
         if instance is not None:
             self.resource_id_set(instance.id)
         print "Name:", instance.name
@@ -157,70 +129,72 @@ class CloudDatabase(rackspaceresource.RackspaceResource):
         print "Flavor:", instance.flavor.name
         print "Volume:", instance.volume.size
         
-        self.pyrax.utils.wait_until(instance, 
-                               "status", 
-                               ["ACTIVE", "ERROR"], 
-                               callback=dbinstancecallback, 
-                               interval=5,
-                               verbose=True,
-                               verbose_atts="progress")
+        #self.pyrax.utils.wait_until(instance, 
+                               #"status", 
+                               #["ACTIVE", "ERROR"], 
+                               #callback=dbinstancecallback, 
+                               #interval=5,
+                               #verbose=True,
+                               #verbose_atts="progress")
 
         return instance
 
-    def check_create_complete(self, cookie):
-        if self.create_complete == True:
-            return True
-        else:
+    def check_create_complete(self, instance):
+        if instance.status != 'ACTIVE':
+            instance.get()
+
+        if instance.status == 'ERROR':
+            logger.debug("ERROR: Cloud DB instance creation failed.")
+            raise Exception("Cloud DB instance creation failed.")
+
+        if instance.status != 'ACTIVE':
             return False
 
-        #instance  = cookie
+        logger.info("SQL instance %s created (flavor:%s, volume:%s)" % 
+                     (self.sqlinstancename, self.flavor, self.volume))
+        #import pdb
+        #pdb.set_trace()
+        try:
+            # create databases
+            for database in self.databases:
+                instance.create_database(database['name'],
+                                    character_set=database['character_set'],
+                                    collate=database['collate'])
+                logger.info("Database %s created on SQL instance %s" %
+                            (database['name'], self.sqlinstancename))
+    
+            # add users
+            dbs = []
+            for user in self.users:
+                if user['databases']:
+                    dbs = user['databases']                
+                instance.create_user(user['name'], user['password'], dbs)
+                logger.info("Database user %s created successfully" %
+                            (user['name']))
 
-        #if instance.status != 'ACTIVE':
-            #return False            
-        #return True
+            return True
+        except Exception as ex:
+            logger.debug("ERROR: exception %s" % ex)
+            raise ex
 
     def handle_delete(self):
-        print 
-        print "*******************handle-delete*******************"
-        print "context:", self.stack.context
+        logger.debug("CloudDatabase handle_delete called")
         if self.resource_id is None:
-            print "resourc_id is null and returning without delete"
+            logger.debug("resourc_id is null and returning without delete")
             return
 
-        import pdb
-        pdb.set_trace()
-        logger.debug("Deleting cloud database %s" % instance.name)        
-        sqlinstancename = self.properties['InstanceName'] 
-        rsusername = self.properties['RackspaceUserName']
-        rsapikey =  self.properties['RackspaceApiKey']
-
-        #self.authenticate()
-        #cdb = self.pyrax.cloud_databases
-        instances = self.cloud_db.list()
+        sqlinstancename = self.properties['InstanceName']
+        instances = self.cloud_db().list()
         if not instances:
-            logger.debug("ERROR: Cloud instance '%d' was not found." % self.resource_id)
+            logger.debug("Cloud DB instance % not found" % sqlinstancename)
             return
 
         for pos, inst in enumerate(instances):
             if inst.id == self.resource_id:
                 inst.delete()
-                logger.debug("SUCCESS: Deleted sql instance %d" % self.resource_id)                
-                print " %s" % sqlinstancename
+                logger.info("Cloud DB instance deleted(id:%s)" % self.resource_id)
                 return
-        print "***************************delete-end*********************"
-        logger.debug("ERROR: Cloud instance '%d' was not found" % self.resource_id)
 
-
-    def validate(self):
-        print 
-        print "*****handle-validate****"
-        print "context:", self.stack.context
-        print "***********************"
-        print
-        pass
-        #raise NotImplementedError("Update not implemented for Resource %s"
-                                  #% type(self))
-        
     def FnGetAtt(self, key):
         raise NotImplementedError("Update not implemented for Resource %s"
                                   % type(self))
@@ -230,7 +204,6 @@ class CloudDatabase(rackspaceresource.RackspaceResource):
                                   type(self))
 
 def resource_mapping():
-    print "*****resource-mapping********"
     return {
-        'Rackspace': CloudDBInstance,
+        'Rackspace::Cloud::DBInstance': CloudDBInstance,
     }
