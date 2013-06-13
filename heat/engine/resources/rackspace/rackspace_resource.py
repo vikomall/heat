@@ -35,13 +35,13 @@ class RackspaceResource(resource.Resource):
         self._cloud_server = None
         self._cloud_nw = None
         self._cloud_blockstore = None
+        self.__authenticate()
 
     def cloud_db(self):
         '''Rackspace cloud database client.'''      
         if self._cloud_db:
             return self._cloud_db
         
-        self.__authenticate()
         self._cloud_db = self.pyrax.cloud_databases
         return self._cloud_db
     
@@ -50,7 +50,6 @@ class RackspaceResource(resource.Resource):
         if self._cloud_lb:
             return self._cloud_lb
         
-        self.__authenticate()
         self._cloud_lb = self.pyrax.cloud_loadbalancers
         return self._cloud_lb
 
@@ -67,7 +66,6 @@ class RackspaceResource(resource.Resource):
         if self._cloud_server:
             return self._cloud_server
          
-        self.__authenticate()
         self._cloud_server = self.pyrax.cloudservers
         return self._cloud_server
 
@@ -76,7 +74,6 @@ class RackspaceResource(resource.Resource):
         if self._cloud_blockstore:
             return self._cloud_blockstore
         
-        self.__authenticate()
         self._cloud_blockstore = self.pyrax.cloud_blockstorage
         return self._cloud_blockstore
 
@@ -85,7 +82,6 @@ class RackspaceResource(resource.Resource):
         if self._cloud_nw:
             return self._cloud_nw
         
-        self.__authenticate()
         self._cloud_nw = self.pyrax.cloud_networks
         return self._cloud_nw
 
