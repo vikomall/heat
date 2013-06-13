@@ -25,7 +25,7 @@ class RackspaceResource(resource.Resource):
     Common base class for Rackspace Resource Providers
     '''
     properties_schema = {}
-    
+
     def __init__(self, name, json_snippet, stack):
         super(RackspaceResource, self).__init__(name, json_snippet, stack)
         self.pyrax = pyrax
@@ -38,34 +38,34 @@ class RackspaceResource(resource.Resource):
         self.__authenticate()
 
     def cloud_db(self):
-        '''Rackspace cloud database client.'''      
+        '''Rackspace cloud database client.'''
         if self._cloud_db:
             return self._cloud_db
-        
+
         self._cloud_db = self.pyrax.cloud_databases
         return self._cloud_db
-    
+
     def cloud_lb(self):
         '''Rackspace cloud loadbalancer client.'''        
         if self._cloud_lb:
             return self._cloud_lb
-        
+
         self._cloud_lb = self.pyrax.cloud_loadbalancers
         return self._cloud_lb
 
     def cloud_dns(self):
-        '''Rackspace cloud dns client'''        
+        '''Rackspace cloud dns client'''
         if self._cloud_dns:
             return self._cloud_dns
-         
+
         self._cloud_dns = self.pyrax.cloud_dns
         return self._cloud_dns
-   
+
     def nova(self):
         '''Rackspace nova client.'''
         if self._cloud_server:
             return self._cloud_server
-         
+
         self._cloud_server = self.pyrax.cloudservers
         return self._cloud_server
 
