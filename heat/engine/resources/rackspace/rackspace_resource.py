@@ -60,9 +60,9 @@ class RackspaceResource(resource.Resource):
         return self._cloud_dns
 
     def nova(self):
-        '''Rackspace nova client.'''
+        '''Rackspace cloudservers client.'''
         if not self._cloud_server:
-            self._cloud_server = self.pyrax.cloudservers
+            self._cloud_server = self.pyrax.connect_to_cloudservers
 
         return self._cloud_server
 
