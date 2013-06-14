@@ -14,6 +14,7 @@
 #    under the License.
 
 import pyrax
+
 from heat.engine import resource
 from heat.openstack.common import log as logging
 
@@ -39,54 +40,48 @@ class RackspaceResource(resource.Resource):
 
     def cloud_db(self):
         '''Rackspace cloud database client.'''
-        if self._cloud_db:
-            return self._cloud_db
+        if not self._cloud_db:
+            self._cloud_db = self.pyrax.cloud_databases
 
-        self._cloud_db = self.pyrax.cloud_databases
         return self._cloud_db
 
     def cloud_lb(self):
         '''Rackspace cloud loadbalancer client.'''        
-        if self._cloud_lb:
-            return self._cloud_lb
+        if not self._cloud_lb:
+            self._cloud_lb = self.pyrax.cloud_loadbalancers
 
-        self._cloud_lb = self.pyrax.cloud_loadbalancers
         return self._cloud_lb
 
     def cloud_dns(self):
         '''Rackspace cloud dns client'''
-        if self._cloud_dns:
-            return self._cloud_dns
+        if not self._cloud_dns:
+            self._cloud_dns = self.pyrax.cloud_dns
 
-        self._cloud_dns = self.pyrax.cloud_dns
         return self._cloud_dns
 
     def nova(self):
         '''Rackspace nova client.'''
-        if self._cloud_server:
-            return self._cloud_server
+        if not self._cloud_server:
+            self._cloud_server = self.pyrax.cloudservers
 
-        self._cloud_server = self.pyrax.cloudservers
         return self._cloud_server
 
     def cinder(self):
         '''Rackspace cinder client.'''
-        if self._cloud_blockstore:
-            return self._cloud_blockstore
+        if not self._cloud_blockstore:
+            self._cloud_blockstore = self.pyrax.cloud_blockstorage
         
-        self._cloud_blockstore = self.pyrax.cloud_blockstorage
         return self._cloud_blockstore
 
     def quantum(self):
         '''Rackspace quantum client.'''
-        if self._cloud_nw:
-            return self._cloud_nw
+        if not self._cloud_nw:
+            self._cloud_nw = self.pyrax.cloud_networks
         
-        self._cloud_nw = self.pyrax.cloud_networks
         return self._cloud_nw
 
     def __authenticate(self):
-        #TODO: currently implemenation shown below authenticates using
+        #TODO: current implemenation shown below authenticates using
         # username and password. Need make it work with auth-token
         pyrax.set_setting("identity_type", "keystone")
         pyrax.set_setting("auth_endpoint", self.context.auth_url)
