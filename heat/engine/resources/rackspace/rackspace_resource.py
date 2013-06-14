@@ -46,7 +46,7 @@ class RackspaceResource(resource.Resource):
         return self._cloud_db
 
     def cloud_lb(self):
-        '''Rackspace cloud loadbalancer client.'''        
+        '''Rackspace cloud loadbalancer client.'''
         if not self._cloud_lb:
             self._cloud_lb = self.pyrax.cloud_loadbalancers
 
@@ -70,15 +70,22 @@ class RackspaceResource(resource.Resource):
         '''Rackspace cinder client.'''
         if not self._cloud_blockstore:
             self._cloud_blockstore = self.pyrax.cloud_blockstorage
-        
+
         return self._cloud_blockstore
 
     def quantum(self):
         '''Rackspace quantum client.'''
         if not self._cloud_nw:
             self._cloud_nw = self.pyrax.cloud_networks
-        
+
         return self._cloud_nw
+
+    def cloud_server(self):
+        '''Rackspace Cloud Servers client.'''
+        if not self._cloud_server:
+            self._cloud_server = self.pyrax.connect_to_cloudservers()
+
+        return self._cloud_server
 
     def __authenticate(self):
         #TODO: current implemenation shown below authenticates using
@@ -87,7 +94,7 @@ class RackspaceResource(resource.Resource):
         pyrax.set_setting("auth_endpoint", self.context.auth_url)
         pyrax.set_setting("tenant_id", self.context.tenant)
         logger.info("Authenticating with username:%s" % self.context.username)
-        pyrax.set_credentials(self.context.username, 
+        pyrax.set_credentials(self.context.username,
                               password=self.context.password)
         logger.info("User %s authenticated successfully."
                     % self.context.username)
