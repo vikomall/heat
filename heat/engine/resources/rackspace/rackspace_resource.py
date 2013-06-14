@@ -62,7 +62,7 @@ class RackspaceResource(resource.Resource):
     def nova(self):
         '''Rackspace cloudservers client.'''
         if not self._cloud_server:
-            self._cloud_server = self.pyrax.connect_to_cloudservers
+            self._cloud_server = self.pyrax.connect_to_cloudservers()
 
         return self._cloud_server
 
@@ -79,13 +79,6 @@ class RackspaceResource(resource.Resource):
             self._cloud_nw = self.pyrax.cloud_networks
 
         return self._cloud_nw
-
-    def cloud_server(self):
-        '''Rackspace Cloud Servers client.'''
-        if not self._cloud_server:
-            self._cloud_server = self.pyrax.connect_to_cloudservers()
-
-        return self._cloud_server
 
     def __authenticate(self):
         #TODO: current implemenation shown below authenticates using
