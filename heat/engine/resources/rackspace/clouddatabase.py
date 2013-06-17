@@ -99,6 +99,10 @@ class CloudDBInstance(rackspace_resource.RackspaceResource):
         self.hostname = None
         self.href = None
 
+    @staticmethod
+    def authenticated():
+        rackspace_resource.RackspaceResource.authenticate = False
+
     def handle_create(self):
         logger.debug("CloudDatabase handle_create called")
         self.sqlinstancename = self.properties['InstanceName']

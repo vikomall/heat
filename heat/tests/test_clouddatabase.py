@@ -13,23 +13,19 @@
 #    under the License.
 
 
-from heat.tests.v1_1 import fakes
 from heat.engine.resources.rackspace import clouddatabase
 from heat.common import exception
 from heat.common import template_format
 from heat.engine import parser
-from heat.engine import resource
-from heat.engine import scheduler
 from heat.openstack.common import uuidutils
 from heat.tests.common import HeatTestCase
-from heat.tests import utils
 from heat.tests.utils import setup_dummy_db
 
 
 wp_template = '''
 {
   "AWSTemplateFormatVersion" : "2010-09-09",
-  "Description" : "MYSQL server cloud database instance running on Rackspace cloud",
+  "Description" : "MYSQL instance running on Rackspace cloud",
   "Parameters" : {
     "FlavorRef": {
       "Description" : "Flavor reference",
@@ -62,22 +58,15 @@ wp_template = '''
 }
 '''
 
+
 class FakeDBInstance(object):
     def __init__(self):
         self.id = 12345
         self.hostname = "testhost"
-        self.links = [{"href":"https://adga23dd432a.rackspacecloud.com/132345245"}]
+        self.links = \
+            [{"href": "https://adga23dd432a.rackspacecloud.com/132345245"}]
         self.resource_id = 12345
 
-class FakeDBClient():
-    def create(self, arg1, arg2, arg3):
-        pass
-    
-    def delete(self):
-        pass
-    
-    def list(self):
-        pass
 
 class CloudDBInstanceTest(HeatTestCase):
     def setUp(self):
@@ -95,28 +84,27 @@ class CloudDBInstanceTest(HeatTestCase):
         t['Resources']['MySqlCloudDB']['Properties']['InstanceName'] = 'Test'
         t['Resources']['MySqlCloudDB']['Properties']['FlavorRef'] = '1GB'
         t['Resources']['MySqlCloudDB']['Properties']['VolumeSize'] = '30'
-        instance = clouddatabase.CloudDBInstance('%s_name' % name,
-                                      t['Resources']['MySqlCloudDB'], stack)
+        instance = clouddatabase.CloudDBInstance(
+            '%s_name' % name,
+            t['Resources']['MySqlCloudDB'],
+            stack)
         instance.resource_id = 1234
-
+        self.m.StubOutWithMock(instance, 'cloud_db')
         return instance
 
     def test_clouddbinstance(self):
-        instance = self._setup_test_clouddbinstance('test_instance_create')
+        instance = self._setup_test_clouddbinstance('dbinstance')
         self.assertEqual(instance.hostname, None)
         self.assertEqual(instance.href, None)
 
     def test_clouddbinstance_create(self):
         instance = self._setup_test_clouddbinstance('dbinstance_create')
-       
-        self.m.StubOutWithMock(instance, 'cloud_db')
-        cloud_db = instance.cloud_db().AndReturn(FakeDBClient())
-        self.m.StubOutWithMock(cloud_db, 'create')
+        fake_client = self.m.CreateMockAnything()
+        instance.cloud_db().AndReturn(fake_client)
         fakedbinstance = FakeDBInstance()
-        cloud_db.create('Test',
-                        flavor='1GB',
-                        volume='30').AndReturn(fakedbinstance)
-
+        fake_client.create('Test',
+                           flavor='1GB',
+                           volume='30').AndReturn(fakedbinstance)
         self.m.ReplayAll()
         instance.handle_create()
         expected_hostname = fakedbinstance.hostname
@@ -131,23 +119,19 @@ class CloudDBInstanceTest(HeatTestCase):
 
     def test_clouddbinstance_delete_resource_notfound(self):
         instance = self._setup_test_clouddbinstance('dbinstance_delete')
-      
-        self.m.StubOutWithMock(instance, 'cloud_db')
-        cloud_db = instance.cloud_db().AndReturn(FakeDBClient())
-        self.m.StubOutWithMock(cloud_db, 'list')
-        cloud_db.list().AndReturn(None)
+        fake_client = self.m.CreateMockAnything()
+        cloud_db = instance.cloud_db().AndReturn(fake_client)
+        fake_client.list().AndReturn(None)
         self.m.ReplayAll()
         self.assertRaises(exception.ResourceNotFound, instance.handle_delete)
         self.m.VerifyAll()
 
     def test_clouddbinstance_delete(self):
         instance = self._setup_test_clouddbinstance('dbinstance_delete')
-       
-        self.m.StubOutWithMock(instance, 'cloud_db')
-        cloud_db = instance.cloud_db().AndReturn(FakeDBClient())
-        self.m.StubOutWithMock(cloud_db, 'list')
+        fake_client = self.m.CreateMockAnything()
+        cloud_db = instance.cloud_db().AndReturn(fake_client)
         fakedbinstance = FakeDBInstance()
-        cloud_db.list().AndReturn({fakedbinstance})
+        fake_client.list().AndReturn({fakedbinstance})
         self.m.ReplayAll()
         instance.handle_delete()
         self.m.VerifyAll()
