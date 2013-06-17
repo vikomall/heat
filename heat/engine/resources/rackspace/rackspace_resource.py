@@ -36,7 +36,7 @@ class RackspaceResource(resource.Resource):
         self._cloud_server = None
         self._cloud_nw = None
         self._cloud_blockstore = None
-        self.__authenticate()
+        #self.__authenticate()
 
     def cloud_db(self):
         '''Rackspace cloud database client.'''

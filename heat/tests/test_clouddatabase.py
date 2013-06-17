@@ -13,12 +13,9 @@
 #    under the License.
 
 
-import copy
-
-import mox
-
 from heat.tests.v1_1 import fakes
-from heat.engine.resources import instance as instances
+from heat.engine.resources.rackspace import clouddatabase
+from heat.common import exception
 from heat.common import template_format
 from heat.engine import parser
 from heat.engine import resource
@@ -50,12 +47,12 @@ wp_template = '''
     }
   },
   "Resources" : {
-    "MySqlCloudDatabaseServer": {
+    "MySqlCloudDB": {
       "Type": "Rackspace::Cloud::DBInstance",
       "Properties" : {
-        "InstanceName" : {"Ref": "InstanceName"},
-        "FlavorRef" : {"Ref": "FlavorRef"},
-        "VolumeSize" : {"Ref": "VolumeSize"},
+        "InstanceName" : {"testsqlinstance"},
+        "FlavorRef" : {"test-flavor"},
+        "VolumeSize" : {"test-volume-size"},
         "Users" : [{"name":"testuser", "password":"testpass123"}] ,
         "Databases" : [{"name":"testdbonetwo"}]
       }
@@ -65,14 +62,29 @@ wp_template = '''
 }
 '''
 
+class FakeDBInstance(object):
+    def __init__(self):
+        self.id = 12345
+        self.hostname = "testhost"
+        self.links = [{"href":"https://adga23dd432a.rackspacecloud.com/132345245"}]
+        self.resource_id = 12345
 
-class instancesTest(HeatTestCase):
+class FakeDBClient():
+    def create(self, arg1, arg2, arg3):
+        pass
+    
+    def delete(self):
+        pass
+    
+    def list(self):
+        pass
+
+class CloudDBInstanceTest(HeatTestCase):
     def setUp(self):
-        super(instancesTest, self).setUp()
-        self.fc = fakes.FakeClient()
+        super(CloudDBInstanceTest, self).setUp()
         setup_dummy_db()
 
-    def _setup_test_instance(self, return_server, name):
+    def _setup_test_clouddbinstance(self, name):
         stack_name = '%s_stack' % name
         t = template_format.parse(wp_template)
         template = parser.Template(t)
@@ -80,206 +92,62 @@ class instancesTest(HeatTestCase):
         stack = parser.Stack(None, stack_name, template, params,
                              stack_id=uuidutils.generate_uuid())
 
-        t['Resources']['WebServer']['Properties']['ImageId'] = 'CentOS 5.2'
-        t['Resources']['WebServer']['Properties']['InstanceType'] = \
-            '256 MB Server'
-        instance = instances.Instance('%s_name' % name,
-                                      t['Resources']['WebServer'], stack)
-
-        self.m.StubOutWithMock(instance, 'nova')
-        instance.nova().MultipleTimes().AndReturn(self.fc)
-
-        instance.t = instance.stack.resolve_runtime_data(instance.t)
-
-        # need to resolve the template functions
-        server_userdata = instance._build_userdata(
-            instance.t['Properties']['UserData'])
-        self.m.StubOutWithMock(self.fc.servers, 'create')
-        self.fc.servers.create(
-            image=1, flavor=1, key_name='test',
-            name=utils.PhysName(stack_name, instance.name),
-            security_groups=None,
-            userdata=server_userdata, scheduler_hints=None,
-            meta=None, nics=None, availability_zone=None).AndReturn(
-                return_server)
+        t['Resources']['MySqlCloudDB']['Properties']['InstanceName'] = 'Test'
+        t['Resources']['MySqlCloudDB']['Properties']['FlavorRef'] = '1GB'
+        t['Resources']['MySqlCloudDB']['Properties']['VolumeSize'] = '30'
+        instance = clouddatabase.CloudDBInstance('%s_name' % name,
+                                      t['Resources']['MySqlCloudDB'], stack)
+        instance.resource_id = 1234
 
         return instance
 
-    def _create_test_instance(self, return_server, name):
-        instance = self._setup_test_instance(return_server, name)
+    def test_clouddbinstance(self):
+        instance = self._setup_test_clouddbinstance('test_instance_create')
+        self.assertEqual(instance.hostname, None)
+        self.assertEqual(instance.href, None)
+
+    def test_clouddbinstance_create(self):
+        instance = self._setup_test_clouddbinstance('dbinstance_create')
+       
+        self.m.StubOutWithMock(instance, 'cloud_db')
+        cloud_db = instance.cloud_db().AndReturn(FakeDBClient())
+        self.m.StubOutWithMock(cloud_db, 'create')
+        fakedbinstance = FakeDBInstance()
+        cloud_db.create('Test',
+                        flavor='1GB',
+                        volume='30').AndReturn(fakedbinstance)
+
         self.m.ReplayAll()
-        scheduler.TaskRunner(instance.create)()
-        return instance
-
-    def test_instance_create(self):
-        return_server = self.fc.servers.list()[1]
-        instance = self._create_test_instance(return_server,
-                                              'test_instance_create')
-        # this makes sure the auto increment worked on instance creation
-        self.assertTrue(instance.id > 0)
-
-        expected_ip = return_server.networks['public'][0]
-        self.assertEqual(instance.FnGetAtt('PublicIp'), expected_ip)
-        self.assertEqual(instance.FnGetAtt('PrivateIp'), expected_ip)
-        self.assertEqual(instance.FnGetAtt('PrivateDnsName'), expected_ip)
-        self.assertEqual(instance.FnGetAtt('PrivateDnsName'), expected_ip)
-
+        instance.handle_create()
+        expected_hostname = fakedbinstance.hostname
+        expected_href = fakedbinstance.links[0]['href']
+        self.assertEqual(instance.FnGetAtt('hostname'), expected_hostname)
+        self.assertEqual(instance.FnGetAtt('href'), expected_href)
         self.m.VerifyAll()
 
-    def test_instance_create_delete(self):
-        return_server = self.fc.servers.list()[1]
-        instance = self._create_test_instance(return_server,
-                                              'test_instance_create_delete')
-        instance.resource_id = 1234
+    def test_clouddbinstance_mapping_validate(self):
+        mapping = clouddatabase.resource_mapping()
+        self.assertTrue('Rackspace::Cloud::DBInstance' in mapping)
 
-        # this makes sure the auto increment worked on instance creation
-        self.assertTrue(instance.id > 0)
-
-        self.m.StubOutWithMock(self.fc.client, 'get_servers_1234')
-        get = self.fc.client.get_servers_1234
-        get().AndRaise(instances.clients.novaclient.exceptions.NotFound(404))
-        mox.Replay(get)
-
-        instance.delete()
-        self.assertTrue(instance.resource_id is None)
-        self.assertEqual(instance.state, instance.DELETE_COMPLETE)
+    def test_clouddbinstance_delete_resource_notfound(self):
+        instance = self._setup_test_clouddbinstance('dbinstance_delete')
+      
+        self.m.StubOutWithMock(instance, 'cloud_db')
+        cloud_db = instance.cloud_db().AndReturn(FakeDBClient())
+        self.m.StubOutWithMock(cloud_db, 'list')
+        cloud_db.list().AndReturn(None)
+        self.m.ReplayAll()
+        self.assertRaises(exception.ResourceNotFound, instance.handle_delete)
         self.m.VerifyAll()
 
-    def test_instance_update_metadata(self):
-        return_server = self.fc.servers.list()[1]
-        instance = self._create_test_instance(return_server,
-                                              'test_instance_update')
-
-        update_template = copy.deepcopy(instance.t)
-        update_template['Metadata'] = {'test': 123}
-        self.assertEqual(None, instance.update(update_template))
-        self.assertEqual(instance.metadata, {'test': 123})
-
-    def test_instance_update_replace(self):
-        return_server = self.fc.servers.list()[1]
-        instance = self._create_test_instance(return_server,
-                                              'test_instance_update')
-
-        update_template = copy.deepcopy(instance.t)
-        update_template['Notallowed'] = {'test': 123}
-        self.assertRaises(resource.UpdateReplace,
-                          instance.update, update_template)
-
-    def test_instance_update_properties(self):
-        return_server = self.fc.servers.list()[1]
-        instance = self._create_test_instance(return_server,
-                                              'test_instance_update')
-
-        update_template = copy.deepcopy(instance.t)
-        update_template['Properties']['KeyName'] = 'mustreplace'
-        self.assertRaises(resource.UpdateReplace,
-                          instance.update, update_template)
-
-    def test_instance_status_build(self):
-        return_server = self.fc.servers.list()[0]
-        instance = self._setup_test_instance(return_server,
-                                             'test_instance_status_build')
-        instance.resource_id = 1234
-
-        # Bind fake get method which Instance.check_create_complete will call
-        def activate_status(server):
-            server.status = 'ACTIVE'
-        return_server.get = activate_status.__get__(return_server)
+    def test_clouddbinstance_delete(self):
+        instance = self._setup_test_clouddbinstance('dbinstance_delete')
+       
+        self.m.StubOutWithMock(instance, 'cloud_db')
+        cloud_db = instance.cloud_db().AndReturn(FakeDBClient())
+        self.m.StubOutWithMock(cloud_db, 'list')
+        fakedbinstance = FakeDBInstance()
+        cloud_db.list().AndReturn({fakedbinstance})
         self.m.ReplayAll()
-
-        scheduler.TaskRunner(instance.create)()
-        self.assertEqual(instance.state, instance.CREATE_COMPLETE)
-
-    def test_instance_status_hard_reboot(self):
-        self._test_instance_status_not_build_active('HARD_REBOOT')
-
-    def test_instance_status_password(self):
-        self._test_instance_status_not_build_active('PASSWORD')
-
-    def test_instance_status_reboot(self):
-        self._test_instance_status_not_build_active('REBOOT')
-
-    def test_instance_status_rescue(self):
-        self._test_instance_status_not_build_active('RESCUE')
-
-    def test_instance_status_resize(self):
-        self._test_instance_status_not_build_active('RESIZE')
-
-    def test_instance_status_revert_resize(self):
-        self._test_instance_status_not_build_active('REVERT_RESIZE')
-
-    def test_instance_status_shutoff(self):
-        self._test_instance_status_not_build_active('SHUTOFF')
-
-    def test_instance_status_suspended(self):
-        self._test_instance_status_not_build_active('SUSPENDED')
-
-    def test_instance_status_verify_resize(self):
-        self._test_instance_status_not_build_active('VERIFY_RESIZE')
-
-    def _test_instance_status_not_build_active(self, uncommon_status):
-        return_server = self.fc.servers.list()[0]
-        instance = self._setup_test_instance(return_server,
-                                             'test_instance_status_build')
-        instance.resource_id = 1234
-
-        # Bind fake get method which Instance.check_create_complete will call
-        def activate_status(server):
-            if hasattr(server, '_test_check_iterations'):
-                server._test_check_iterations += 1
-            else:
-                server._test_check_iterations = 1
-            if server._test_check_iterations == 1:
-                server.status = uncommon_status
-            if server._test_check_iterations > 2:
-                server.status = 'ACTIVE'
-        return_server.get = activate_status.__get__(return_server)
-        self.m.StubOutWithMock(scheduler.TaskRunner, '_sleep')
-        scheduler.TaskRunner._sleep(mox.IsA(int)).AndReturn(None)
-        scheduler.TaskRunner._sleep(mox.IsA(int)).AndReturn(None)
-        self.m.ReplayAll()
-
-        scheduler.TaskRunner(instance.create)()
-        self.assertEqual(instance.state, instance.CREATE_COMPLETE)
-
+        instance.handle_delete()
         self.m.VerifyAll()
-
-    def test_build_nics(self):
-        return_server = self.fc.servers.list()[1]
-        instance = self._create_test_instance(return_server,
-                                              'test_build_nics')
-
-        self.assertEqual(None, instance._build_nics([]))
-        self.assertEqual(None, instance._build_nics(None))
-        self.assertEqual([
-            {'port-id': 'id3'}, {'port-id': 'id1'}, {'port-id': 'id2'}],
-            instance._build_nics([
-                'id3', 'id1', 'id2']))
-        self.assertEqual([
-            {'port-id': 'id1'},
-            {'port-id': 'id2'},
-            {'port-id': 'id3'}], instance._build_nics([
-                {'NetworkInterfaceId': 'id3', 'DeviceIndex': '3'},
-                {'NetworkInterfaceId': 'id1', 'DeviceIndex': '1'},
-                {'NetworkInterfaceId': 'id2', 'DeviceIndex': 2},
-            ]))
-        self.assertEqual([
-            {'port-id': 'id1'},
-            {'port-id': 'id2'},
-            {'port-id': 'id3'},
-            {'port-id': 'id4'},
-            {'port-id': 'id5'}
-        ], instance._build_nics([
-            {'NetworkInterfaceId': 'id3', 'DeviceIndex': '3'},
-            {'NetworkInterfaceId': 'id1', 'DeviceIndex': '1'},
-            {'NetworkInterfaceId': 'id2', 'DeviceIndex': 2},
-            'id4',
-            'id5'
-        ]))
-
-    def test_instance_without_ip_address(self):
-        return_server = self.fc.servers.list()[3]
-        instance = self._create_test_instance(return_server,
-                                              'test_without_ip_address')
-
-        self.assertEqual(instance.FnGetAtt('PrivateIp'), '0.0.0.0')
