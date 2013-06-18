@@ -119,9 +119,7 @@ class CloudDBInstanceTest(HeatTestCase):
 
     def test_clouddbinstance_delete_resource_notfound(self):
         instance = self._setup_test_clouddbinstance('dbinstance_delete')
-        fake_client = self.m.CreateMockAnything()
-        cloud_db = instance.cloud_db().AndReturn(fake_client)
-        fake_client.list().AndReturn(None)
+        instance.resource_id = None
         self.m.ReplayAll()
         self.assertRaises(exception.ResourceNotFound, instance.handle_delete)
         self.m.VerifyAll()
@@ -131,7 +129,7 @@ class CloudDBInstanceTest(HeatTestCase):
         fake_client = self.m.CreateMockAnything()
         cloud_db = instance.cloud_db().AndReturn(fake_client)
         fakedbinstance = FakeDBInstance()
-        fake_client.list().AndReturn({fakedbinstance})
+        fake_client.delete(1234).AndReturn(None)
         self.m.ReplayAll()
         instance.handle_delete()
         self.m.VerifyAll()

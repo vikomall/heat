@@ -132,7 +132,7 @@ class CloudDBInstance(rackspace_resource.RackspaceResource):
 
         if instance.status == 'ERROR':
             logger.debug("ERROR: Cloud DB instance creation failed.")
-            raise Exception("Cloud DB instance creation failed.")
+            raise exception.Error("Cloud DB instance creation failed.")
 
         if instance.status != 'ACTIVE':
             return False
@@ -165,33 +165,18 @@ class CloudDBInstance(rackspace_resource.RackspaceResource):
 
     def handle_delete(self):
         logger.debug("CloudDatabase handle_delete called.")
+        sqlinstancename = self.properties['InstanceName']
         if self.resource_id is None:
             logger.debug("resourc_id is null and returning without delete.")
-            return
-
-        sqlinstancename = self.properties['InstanceName']
-        instances = self.cloud_db().list()
-        if not instances:
-            logger.debug("Cloud DB instance %s not found" % sqlinstancename)
             raise exception.ResourceNotFound(resource_name=sqlinstancename,
                                              stack_name=self.stack.name)
-
-        for pos, inst in enumerate(instances):
-            if inst.id == self.resource_id:
-                inst.delete()
-                logger.info("Cloud DB instance deleted(id:%s)." %
-                            self.resource_id)
-                return
+        instances = self.cloud_db().delete(self.resource_id)
 
     def FnGetAtt(self, key):
         if key == 'hostname':
             return self.hostname
         elif key == 'href':
             return self.href
-
-    def FnGetRefId(self):
-        raise NotImplementedError("Update not implemented for Resource %s" %
-                                  type(self))
 
 
 def resource_mapping():
