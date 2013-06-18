@@ -540,6 +540,15 @@ class CfnStackControllerTest(HeatTestCase):
                            'args': engine_args},
                   'version': self.api_version}, None
                  ).AndRaise(rpc_common.RemoteError("AttributeError"))
+        rpc.call(dummy_req.context, self.topic,
+                 {'namespace': None,
+                  'method': 'create_stack',
+                  'args': {'stack_name': stack_name,
+                           'template': template,
+                           'params': engine_parms,
+                           'args': engine_args},
+                  'version': self.api_version}, None
+                 ).AndRaise(rpc_common.RemoteError("UnknownUserParameter"))
 
         self.m.ReplayAll()
 
@@ -547,6 +556,12 @@ class CfnStackControllerTest(HeatTestCase):
 
         self.assertEqual(type(result),
                          exception.HeatInvalidParameterValueError)
+
+        result = self.controller.create(dummy_req)
+
+        self.assertEqual(type(result),
+                         exception.HeatInvalidParameterValueError)
+
         self.m.VerifyAll()
 
     def test_create_err_exists(self):
@@ -582,7 +597,7 @@ class CfnStackControllerTest(HeatTestCase):
         result = self.controller.create(dummy_req)
 
         self.assertEqual(type(result),
-                         exception.HeatInvalidParameterValueError)
+                         exception.AlreadyExistsError)
         self.m.VerifyAll()
 
     def test_create_err_engine(self):
@@ -942,6 +957,7 @@ class CfnStackControllerTest(HeatTestCase):
                          u'stack_name': u'wordpress',
                          u'stack_id': u'6',
                          u'path': u'/resources/WikiDatabase/events/42'},
+                        u'resource_action': u'TEST',
                         u'resource_status': u'IN_PROGRESS',
                         u'physical_resource_id': None,
                         u'resource_properties': {u'UserData': u'blah'},
@@ -968,7 +984,7 @@ class CfnStackControllerTest(HeatTestCase):
                      {'StackEvents':
                       [{'EventId': u'42',
                         'StackId': u'arn:openstack:heat::t:stacks/wordpress/6',
-                        'ResourceStatus': u'IN_PROGRESS',
+                        'ResourceStatus': u'TEST_IN_PROGRESS',
                         'ResourceType': u'AWS::EC2::Instance',
                         'Timestamp': u'2012-07-23T13:05:39Z',
                         'StackName': u'wordpress',
@@ -1056,7 +1072,8 @@ class CfnStackControllerTest(HeatTestCase):
                                            u'stack_name': u'wordpress',
                                            u'stack_id': u'6',
                                            u'path': u''},
-                       u'resource_status': u'CREATE_COMPLETE',
+                       u'resource_action': u'CREATE',
+                       u'resource_status': u'COMPLETE',
                        u'physical_resource_id':
                        u'a3455d8c-9f88-404d-a85b-5315293e67de',
                        u'resource_type': u'AWS::EC2::Instance',
@@ -1184,7 +1201,8 @@ class CfnStackControllerTest(HeatTestCase):
                                             u'stack_name': u'wordpress',
                                             u'stack_id': u'6',
                                             u'path': u''},
-                        u'resource_status': u'CREATE_COMPLETE',
+                        u'resource_action': u'CREATE',
+                        u'resource_status': u'COMPLETE',
                         u'physical_resource_id':
                         u'a3455d8c-9f88-404d-a85b-5315293e67de',
                         u'resource_type': u'AWS::EC2::Instance',
@@ -1276,7 +1294,8 @@ class CfnStackControllerTest(HeatTestCase):
                                             u'stack_name': u'wordpress',
                                             u'stack_id': u'6',
                                             u'path': u''},
-                        u'resource_status': u'CREATE_COMPLETE',
+                        u'resource_action': u'CREATE',
+                        u'resource_status': u'COMPLETE',
                         u'physical_resource_id':
                         u'a3455d8c-9f88-404d-a85b-5315293e67de',
                         u'resource_type': u'AWS::EC2::Instance',
@@ -1384,7 +1403,8 @@ class CfnStackControllerTest(HeatTestCase):
                                             u'stack_name': u'wordpress',
                                             u'stack_id': u'6',
                                             u'path': u''},
-                        u'resource_status': u'CREATE_COMPLETE',
+                        u'resource_action': u'CREATE',
+                        u'resource_status': u'COMPLETE',
                         u'physical_resource_id':
                         u'a3455d8c-9f88-404d-a85b-5315293e67de',
                         u'resource_type': u'AWS::EC2::Instance'}]

@@ -74,9 +74,10 @@ class Stack(object):
         '''
 
         if re.match("[a-zA-Z][a-zA-Z0-9_.-]*$", stack_name) is None:
-            raise ValueError(_("Invalid stack name %s" % stack_name
-                               + ", must contain only alphanumeric or "
-                               + "\"_-.\" characters, must start with alpha"))
+            raise ValueError(_('Invalid stack name %s'
+                               ' must contain only alphanumeric or '
+                               '\"_-.\" characters, must start with alpha'
+                               ) % stack_name)
 
         self.id = stack_id
         self.context = context
@@ -230,10 +231,10 @@ class Stack(object):
         '''
         for r in self.resources.values():
             if r.state in (
-                    r.CREATE_IN_PROGRESS,
-                    r.CREATE_COMPLETE,
-                    r.UPDATE_IN_PROGRESS,
-                    r.UPDATE_COMPLETE) and r.FnGetRefId() == refid:
+                    (r.CREATE, r.IN_PROGRESS),
+                    (r.CREATE, r.COMPLETE),
+                    (r.UPDATE, r.IN_PROGRESS),
+                    (r.UPDATE, r.COMPLETE)) and r.FnGetRefId() == refid:
                 return r
 
     def validate(self):
@@ -527,7 +528,8 @@ class Stack(object):
                     logger.exception('create')
                     failed = True
             else:
-                res.state_set(res.CREATE_FAILED, 'Resource restart aborted')
+                res.state_set(res.CREATE, res.FAILED,
+                              'Resource restart aborted')
         # TODO(asalkeld) if any of this fails we Should
         # restart the whole stack
 
@@ -573,8 +575,10 @@ def resolve_runtime_data(template, resources, snippet):
                                         resources=resources),
                       functools.partial(template.resolve_attributes,
                                         resources=resources),
+                      template.resolve_split,
                       template.resolve_select,
                       template.resolve_joins,
+                      template.resolve_replace,
                       template.resolve_base64])
 
 

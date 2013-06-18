@@ -226,6 +226,10 @@ class TemplateTest(HeatTestCase):
         data = {"Fn::Select": ["red", {"red": "robin", "re": "foo"}]}
         self.assertEqual(parser.Template.resolve_select(data), "robin")
 
+    def test_select_from_none(self):
+        data = {"Fn::Select": ["red", None]}
+        self.assertEqual(parser.Template.resolve_select(data), "")
+
     def test_select_from_dict_not_str(self):
         data = {"Fn::Select": ["1", {"red": "robin", "re": "foo"}]}
         self.assertRaises(TypeError, parser.Template.resolve_select,
@@ -328,6 +332,24 @@ class TemplateTest(HeatTestCase):
         self.assertRaises(TypeError, parser.Template.resolve_joins,
                           join3)
 
+    def test_split_ok(self):
+        data = {"Fn::Split": [";", "foo; bar; achoo"]}
+        self.assertEqual(parser.Template.resolve_split(data),
+                         ['foo', ' bar', ' achoo'])
+
+    def test_split_no_delim_in_str(self):
+        data = {"Fn::Split": [";", "foo, bar, achoo"]}
+        self.assertEqual(parser.Template.resolve_split(data),
+                         ['foo, bar, achoo'])
+
+    def test_split_no_delim(self):
+        data = {"Fn::Split": ["foo, bar, achoo"]}
+        self.assertRaises(ValueError, parser.Template.resolve_split, data)
+
+    def test_split_no_list(self):
+        data = {"Fn::Split": "foo, bar, achoo"}
+        self.assertRaises(TypeError, parser.Template.resolve_split, data)
+
     def test_base64(self):
         snippet = {"Fn::Base64": "foobar"}
         # For now, the Base64 function just returns the original text, and
@@ -360,6 +382,64 @@ class TemplateTest(HeatTestCase):
         self.assertEqual(
             parser.Template.resolve_availability_zones(snippet, stack),
             ["nova1"])
+
+    def test_replace(self):
+        snippet = {"Fn::Replace": [
+            {'$var1': 'foo', '%var2%': 'bar'},
+            '$var1 is %var2%'
+        ]}
+        self.assertEqual(
+            parser.Template.resolve_replace(snippet),
+            'foo is bar')
+
+    def test_replace_list_mapping(self):
+        snippet = {"Fn::Replace": [
+            ['var1', 'foo', 'var2', 'bar'],
+            '$var1 is ${var2}'
+        ]}
+        self.assertRaises(TypeError, parser.Template.resolve_replace,
+                          snippet)
+
+    def test_replace_dict(self):
+        snippet = {"Fn::Replace": {}}
+        self.assertRaises(TypeError, parser.Template.resolve_replace,
+                          snippet)
+
+    def test_replace_missing_template(self):
+        snippet = {"Fn::Replace": [['var1', 'foo', 'var2', 'bar']]}
+        self.assertRaises(ValueError, parser.Template.resolve_replace,
+                          snippet)
+
+    def test_replace_none_template(self):
+        snippet = {"Fn::Replace": [['var1', 'foo', 'var2', 'bar'], None]}
+        self.assertRaises(TypeError, parser.Template.resolve_replace,
+                          snippet)
+
+    def test_replace_list_string(self):
+        snippet = {"Fn::Replace": [
+            {'var1': 'foo', 'var2': 'bar'},
+            ['$var1 is ${var2}']
+        ]}
+        self.assertRaises(TypeError, parser.Template.resolve_replace,
+                          snippet)
+
+    def test_replace_none_values(self):
+        snippet = {"Fn::Replace": [
+            {'$var1': None, '${var2}': None},
+            '"$var1" is "${var2}"'
+        ]}
+        self.assertEqual(
+            parser.Template.resolve_replace(snippet),
+            '"" is ""')
+
+    def test_replace_missing_key(self):
+        snippet = {"Fn::Replace": [
+            {'$var1': 'foo', 'var2': 'bar'},
+            '"$var1" is "${var3}"'
+        ]}
+        self.assertEqual(
+            parser.Template.resolve_replace(snippet),
+            '"foo" is "${var3}"')
 
 
 class StackTest(HeatTestCase):
@@ -535,13 +615,12 @@ class StackTest(HeatTestCase):
         self.assertNotEqual(None, resource)
         self.assertEqual(rsrc, self.stack.resource_by_refid('aaaa'))
 
-        rsrc.state = rsrc.DELETE_IN_PROGRESS
+        rsrc.state_set(rsrc.DELETE, rsrc.IN_PROGRESS)
         try:
             self.assertEqual(None, self.stack.resource_by_refid('aaaa'))
-
             self.assertEqual(None, self.stack.resource_by_refid('bbbb'))
         finally:
-            rsrc.state = rsrc.CREATE_COMPLETE
+            rsrc.state_set(rsrc.CREATE, rsrc.COMPLETE)
 
     @stack_delete_after
     def test_update_add(self):
@@ -1223,21 +1302,18 @@ class StackTest(HeatTestCase):
         rsrc.resource_id_set('aaaa')
         self.assertEqual('AResource', rsrc.FnGetAtt('foo'))
 
-        for state in (
-                rsrc.CREATE_IN_PROGRESS,
-                rsrc.CREATE_COMPLETE,
-                rsrc.UPDATE_IN_PROGRESS,
-                rsrc.UPDATE_COMPLETE):
-            rsrc.state = state
+        for action, status in (
+                (rsrc.CREATE, rsrc.IN_PROGRESS),
+                (rsrc.CREATE, rsrc.COMPLETE),
+                (rsrc.UPDATE, rsrc.IN_PROGRESS),
+                (rsrc.UPDATE, rsrc.COMPLETE)):
+            rsrc.state_set(action, status)
             self.assertEqual('AResource', self.stack.output('TestOutput'))
-        for state in (
-                rsrc.CREATE_FAILED,
-                rsrc.DELETE_IN_PROGRESS,
-                rsrc.DELETE_FAILED,
-                rsrc.DELETE_COMPLETE,
-                rsrc.UPDATE_FAILED,
-                None):
-            rsrc.state = state
+        for action, status in (
+                (rsrc.CREATE, rsrc.FAILED),
+                (rsrc.DELETE, rsrc.IN_PROGRESS),
+                (rsrc.DELETE, rsrc.FAILED),
+                (rsrc.DELETE, rsrc.COMPLETE),
+                (rsrc.UPDATE, rsrc.FAILED)):
+            rsrc.state_set(action, status)
             self.assertEqual(None, self.stack.output('TestOutput'))
-
-        rsrc.state = rsrc.CREATE_COMPLETE

@@ -21,6 +21,7 @@ from heat.common import template_format
 from heat.engine.resources import autoscaling as asc
 from heat.engine.resources import loadbalancer
 from heat.engine.resources import instance
+from heat.engine import parser
 from heat.engine import resource
 from heat.engine import scheduler
 from heat.engine.resource import Metadata
@@ -101,7 +102,7 @@ class AutoScalingTest(HeatTestCase):
                                     stack)
         self.assertEqual(None, rsrc.validate())
         scheduler.TaskRunner(rsrc.create)()
-        self.assertEqual(asc.AutoScalingGroup.CREATE_COMPLETE, rsrc.state)
+        self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
         return rsrc
 
     def create_scaling_policy(self, t, stack, resource_name):
@@ -111,8 +112,7 @@ class AutoScalingTest(HeatTestCase):
 
         self.assertEqual(None, rsrc.validate())
         scheduler.TaskRunner(rsrc.create)()
-        self.assertEqual(asc.ScalingPolicy.CREATE_COMPLETE,
-                         rsrc.state)
+        self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
         return rsrc
 
     def _stub_create(self, num):
@@ -313,6 +313,41 @@ class AutoScalingTest(HeatTestCase):
         rsrc.delete()
         self.m.VerifyAll()
 
+    def test_lb_reload_static_resolve(self):
+        t = template_format.parse(as_template)
+        properties = t['Resources']['ElasticLoadBalancer']['Properties']
+        properties['AvailabilityZones'] = {'Fn::GetAZs': ''}
+
+        self.m.StubOutWithMock(parser.Stack, 'get_availability_zones')
+        parser.Stack.get_availability_zones().MultipleTimes().AndReturn(
+            ['abc', 'xyz'])
+
+        # Check that the Fn::GetAZs is correctly resolved
+        expected = {u'Type': u'AWS::ElasticLoadBalancing::LoadBalancer',
+                    u'Properties': {'Instances': ['WebServerGroup-0'],
+                                    u'Listeners': [{u'InstancePort': u'80',
+                                                    u'LoadBalancerPort': u'80',
+                                                    u'Protocol': u'HTTP'}],
+                                    u'AvailabilityZones': ['abc', 'xyz']}}
+        self.m.StubOutWithMock(loadbalancer.LoadBalancer, 'update')
+        loadbalancer.LoadBalancer.update(expected).AndReturn(None)
+
+        now = timeutils.utcnow()
+        self._stub_meta_expected(now, 'ExactCapacity : 1')
+        self._stub_create(1)
+        self.m.ReplayAll()
+        stack = parse_stack(t)
+        rsrc = self.create_scaling_group(t, stack, 'WebServerGroup')
+
+        self.assertEqual('WebServerGroup', rsrc.FnGetRefId())
+        self.assertEqual('WebServerGroup-0', rsrc.resource_id)
+        update_snippet = copy.deepcopy(rsrc.parsed_template())
+        update_snippet['Properties']['Cooldown'] = '61'
+        self.assertEqual(None, rsrc.update(update_snippet))
+
+        rsrc.delete()
+        self.m.VerifyAll()
+
     def test_scaling_group_adjust(self):
         t = template_format.parse(as_template)
         stack = parse_stack(t)
@@ -466,7 +501,7 @@ class AutoScalingTest(HeatTestCase):
 
         now = now + datetime.timedelta(seconds=10)
         self.m.StubOutWithMock(timeutils, 'utcnow')
-        timeutils.utcnow().AndReturn(now)
+        timeutils.utcnow().MultipleTimes().AndReturn(now)
 
         self.m.StubOutWithMock(Metadata, '__get__')
         Metadata.__get__(mox.IgnoreArg(), rsrc, mox.IgnoreArg()
@@ -677,7 +712,7 @@ class AutoScalingTest(HeatTestCase):
 
         now = now + datetime.timedelta(seconds=10)
         self.m.StubOutWithMock(timeutils, 'utcnow')
-        timeutils.utcnow().AndReturn(now)
+        timeutils.utcnow().MultipleTimes().AndReturn(now)
 
         self.m.StubOutWithMock(Metadata, '__get__')
         Metadata.__get__(mox.IgnoreArg(), up_policy, mox.IgnoreArg()

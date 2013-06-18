@@ -37,9 +37,6 @@ class User(resource.Resource):
                                           }},
                          'Policies': {'Type': 'List'}}
 
-    def __init__(self, name, json_snippet, stack):
-        super(User, self).__init__(name, json_snippet, stack)
-
     def _validate_policies(self, policies):
         for policy in (policies or []):
             # When we support AWS IAM style policies, we will have to accept
@@ -96,7 +93,7 @@ class User(resource.Resource):
     def FnGetAtt(self, key):
         #TODO(asalkeld) Implement Arn attribute
         raise exception.InvalidTemplateAttribute(
-            resource=self.physical_resource_name(), key=key)
+            resource=self.name, key=key)
 
     def access_allowed(self, resource_name):
         policies = (self.properties['Policies'] or [])
@@ -221,9 +218,6 @@ class AccessKey(resource.Resource):
 class AccessPolicy(resource.Resource):
     properties_schema = {'AllowedResources': {'Type': 'List',
                                               'Required': True}}
-
-    def __init__(self, name, json_snippet, stack):
-        super(AccessPolicy, self).__init__(name, json_snippet, stack)
 
     def handle_create(self):
         resources = self.properties['AllowedResources']

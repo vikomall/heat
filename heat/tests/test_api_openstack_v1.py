@@ -362,11 +362,25 @@ class StackControllerTest(ControllerTest, HeatTestCase):
                            'args': {'timeout_mins': 30}},
                   'version': self.api_version},
                  None).AndRaise(rpc_common.RemoteError("AttributeError"))
+        rpc.call(req.context, self.topic,
+                 {'namespace': None,
+                  'method': 'create_stack',
+                  'args': {'stack_name': stack_name,
+                           'template': template,
+                           'params': parameters,
+                           'args': {'timeout_mins': 30}},
+                  'version': self.api_version},
+                 None).AndRaise(rpc_common.RemoteError("UnknownUserParameter"))
+
         self.m.ReplayAll()
 
         self.assertRaises(webob.exc.HTTPBadRequest,
                           self.controller.create,
                           req, tenant_id=self.tenant, body=body)
+        self.assertRaises(webob.exc.HTTPBadRequest,
+                          self.controller.create,
+                          req, tenant_id=self.tenant, body=body)
+
         self.m.VerifyAll()
 
     def test_create_err_existing(self):
@@ -936,7 +950,8 @@ class ResourceControllerTest(ControllerTest, HeatTestCase):
                 u'resource_status_reason': None,
                 u'updated_time': u'2012-07-23T13:06:00Z',
                 u'stack_identity': stack_identity,
-                u'resource_status': u'CREATE_COMPLETE',
+                u'resource_action': u'CREATE',
+                u'resource_status': u'COMPLETE',
                 u'physical_resource_id':
                 u'a3455d8c-9f88-404d-a85b-5315293e67de',
                 u'resource_type': u'AWS::EC2::Instance',
@@ -1010,7 +1025,8 @@ class ResourceControllerTest(ControllerTest, HeatTestCase):
             u'resource_status_reason': None,
             u'updated_time': u'2012-07-23T13:06:00Z',
             u'stack_identity': dict(stack_identity),
-            u'resource_status': u'CREATE_COMPLETE',
+            u'resource_action': u'CREATE',
+            u'resource_status': u'COMPLETE',
             u'physical_resource_id':
             u'a3455d8c-9f88-404d-a85b-5315293e67de',
             u'resource_type': u'AWS::EC2::Instance',
@@ -1149,7 +1165,8 @@ class ResourceControllerTest(ControllerTest, HeatTestCase):
             u'resource_status_reason': None,
             u'updated_time': u'2012-07-23T13:06:00Z',
             u'stack_identity': dict(stack_identity),
-            u'resource_status': u'CREATE_COMPLETE',
+            u'resource_action': u'CREATE',
+            u'resource_status': u'COMPLETE',
             u'physical_resource_id':
             u'a3455d8c-9f88-404d-a85b-5315293e67de',
             u'resource_type': u'AWS::EC2::Instance',
@@ -1267,6 +1284,7 @@ class EventControllerTest(ControllerTest, HeatTestCase):
                 u'logical_resource_id': res_name,
                 u'resource_status_reason': u'state changed',
                 u'event_identity': dict(ev_identity),
+                u'resource_action': u'CREATE',
                 u'resource_status': u'IN_PROGRESS',
                 u'physical_resource_id': None,
                 u'resource_properties': {u'UserData': u'blah'},
@@ -1279,6 +1297,7 @@ class EventControllerTest(ControllerTest, HeatTestCase):
                 u'logical_resource_id': 'SomeOtherResource',
                 u'resource_status_reason': u'state changed',
                 u'event_identity': dict(ev_identity),
+                u'resource_action': u'CREATE',
                 u'resource_status': u'IN_PROGRESS',
                 u'physical_resource_id': None,
                 u'resource_properties': {u'UserData': u'blah'},
@@ -1311,7 +1330,7 @@ class EventControllerTest(ControllerTest, HeatTestCase):
                     u'logical_resource_id': res_name,
                     u'resource_status_reason': u'state changed',
                     u'event_time': u'2012-07-23T13:05:39Z',
-                    u'resource_status': u'IN_PROGRESS',
+                    u'resource_status': u'CREATE_IN_PROGRESS',
                     u'physical_resource_id': None,
                 }
             ]
@@ -1340,6 +1359,7 @@ class EventControllerTest(ControllerTest, HeatTestCase):
                 u'logical_resource_id': res_name,
                 u'resource_status_reason': u'state changed',
                 u'event_identity': dict(ev_identity),
+                u'resource_action': u'CREATE',
                 u'resource_status': u'IN_PROGRESS',
                 u'physical_resource_id': None,
                 u'resource_properties': {u'UserData': u'blah'},
@@ -1371,7 +1391,7 @@ class EventControllerTest(ControllerTest, HeatTestCase):
                     u'logical_resource_id': res_name,
                     u'resource_status_reason': u'state changed',
                     u'event_time': u'2012-07-23T13:05:39Z',
-                    u'resource_status': u'IN_PROGRESS',
+                    u'resource_status': u'CREATE_IN_PROGRESS',
                     u'physical_resource_id': None,
                 }
             ]
@@ -1423,6 +1443,7 @@ class EventControllerTest(ControllerTest, HeatTestCase):
                 u'logical_resource_id': 'SomeOtherResource',
                 u'resource_status_reason': u'state changed',
                 u'event_identity': dict(ev_identity),
+                u'resource_action': u'CREATE',
                 u'resource_status': u'IN_PROGRESS',
                 u'physical_resource_id': None,
                 u'resource_properties': {u'UserData': u'blah'},
@@ -1469,6 +1490,7 @@ class EventControllerTest(ControllerTest, HeatTestCase):
                 u'logical_resource_id': res_name,
                 u'resource_status_reason': u'state changed',
                 u'event_identity': dict(ev1_identity),
+                u'resource_action': u'CREATE',
                 u'resource_status': u'IN_PROGRESS',
                 u'physical_resource_id': None,
                 u'resource_properties': {u'UserData': u'blah'},
@@ -1481,7 +1503,8 @@ class EventControllerTest(ControllerTest, HeatTestCase):
                 u'logical_resource_id': res_name,
                 u'resource_status_reason': u'state changed',
                 u'event_identity': dict(ev_identity),
-                u'resource_status': u'CREATE_COMPLETE',
+                u'resource_action': u'CREATE',
+                u'resource_status': u'COMPLETE',
                 u'physical_resource_id':
                 u'a3455d8c-9f88-404d-a85b-5315293e67de',
                 u'resource_properties': {u'UserData': u'blah'},
@@ -1546,6 +1569,7 @@ class EventControllerTest(ControllerTest, HeatTestCase):
                 u'logical_resource_id': res_name,
                 u'resource_status_reason': u'state changed',
                 u'event_identity': dict(ev_identity),
+                u'resource_action': u'CREATE',
                 u'resource_status': u'IN_PROGRESS',
                 u'physical_resource_id': None,
                 u'resource_properties': {u'UserData': u'blah'},
@@ -1590,6 +1614,7 @@ class EventControllerTest(ControllerTest, HeatTestCase):
                 u'logical_resource_id': 'SomeOtherResourceName',
                 u'resource_status_reason': u'state changed',
                 u'event_identity': dict(ev_identity),
+                u'resource_action': u'CREATE',
                 u'resource_status': u'IN_PROGRESS',
                 u'physical_resource_id': None,
                 u'resource_properties': {u'UserData': u'blah'},

@@ -17,7 +17,6 @@ from urlparse import urlparse
 
 from heat.common import exception
 from heat.engine import resource
-from heat.common import short_id
 from heat.openstack.common import log as logging
 from heat.engine import clients
 
@@ -38,9 +37,6 @@ class S3Bucket(resource.Resource):
                          'WebsiteConfiguration': {'Type': 'Map',
                                                   'Schema': website_schema}}
 
-    def __init__(self, name, json_snippet, stack):
-        super(S3Bucket, self).__init__(name, json_snippet, stack)
-
     def validate(self):
         '''
         Validate any of the provided params
@@ -50,13 +46,9 @@ class S3Bucket(resource.Resource):
             return {'Error':
                     'S3 services unavailable because of missing swiftclient.'}
 
-    def _create_container_name(self):
-        return '%s-%s-%s' % (self.stack.name, self.name,
-                             short_id.generate_id())
-
     def handle_create(self):
         """Create a bucket."""
-        container = self._create_container_name()
+        container = self.physical_resource_name()
         headers = {}
         logger.debug('S3Bucket create container %s with headers %s' %
                      (container, headers))

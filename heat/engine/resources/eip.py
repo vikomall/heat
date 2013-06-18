@@ -49,7 +49,19 @@ class ElasticIp(resource.Resource):
         self.ipaddress = ips.ip
         self.resource_id_set(ips.id)
 
+        if self.properties['InstanceId']:
+            server = self.nova().servers.get(self.properties['InstanceId'])
+            res = server.add_floating_ip(self._ipaddress())
+
     def handle_delete(self):
+        if self.properties['InstanceId']:
+            try:
+                server = self.nova().servers.get(self.properties['InstanceId'])
+                if server:
+                    server.remove_floating_ip(self._ipaddress())
+            except clients.novaclient.exceptions.NotFound as ex:
+                pass
+
         """De-allocate a floating IP."""
         if self.resource_id is not None:
             self.nova().floating_ips.delete(self.resource_id)
@@ -67,13 +79,10 @@ class ElasticIp(resource.Resource):
 
 class ElasticIpAssociation(resource.Resource):
     properties_schema = {'InstanceId': {'Type': 'String',
-                                        'Required': True},
+                                        'Required': False},
                          'EIP': {'Type': 'String'},
                          'AllocationId': {'Type': 'String',
                                           'Implemented': False}}
-
-    def __init__(self, name, json_snippet, stack):
-        super(ElasticIpAssociation, self).__init__(name, json_snippet, stack)
 
     def FnGetRefId(self):
         return unicode(self.properties.get('EIP', '0.0.0.0'))
@@ -84,18 +93,20 @@ class ElasticIpAssociation(resource.Resource):
                      (self.properties['InstanceId'],
                       self.properties['EIP']))
 
-        server = self.nova().servers.get(self.properties['InstanceId'])
-        server.add_floating_ip(self.properties['EIP'])
+        if self.properties['InstanceId']:
+            server = self.nova().servers.get(self.properties['InstanceId'])
+            server.add_floating_ip(self.properties['EIP'])
         self.resource_id_set(self.properties['EIP'])
 
     def handle_delete(self):
         """Remove a floating IP address from a server."""
-        try:
-            server = self.nova().servers.get(self.properties['InstanceId'])
-            if server:
-                server.remove_floating_ip(self.properties['EIP'])
-        except clients.novaclient.exceptions.NotFound as ex:
-            pass
+        if self.properties['InstanceId']:
+            try:
+                server = self.nova().servers.get(self.properties['InstanceId'])
+                if server:
+                    server.remove_floating_ip(self.properties['EIP'])
+            except clients.novaclient.exceptions.NotFound as ex:
+                pass
 
 
 def resource_mapping():

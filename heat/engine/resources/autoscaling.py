@@ -74,9 +74,6 @@ class InstanceGroup(resource.Resource):
     update_allowed_keys = ('Properties',)
     update_allowed_properties = ('Size',)
 
-    def __init__(self, name, json_snippet, stack):
-        super(InstanceGroup, self).__init__(name, json_snippet, stack)
-
     def handle_create(self):
         return self.resize(int(self.properties['Size']), raise_on_error=True)
 
@@ -122,8 +119,8 @@ class InstanceGroup(resource.Resource):
             template, which causes problems for event handling since we can't
             look up the resources via parser.Stack
             '''
-            def state_set(self, new_state, reason="state changed"):
-                self._store_or_update(new_state, reason)
+            def state_set(self, action, status, reason="state changed"):
+                self._store_or_update(action, status, reason)
 
         conf = self.properties['LaunchConfigurationName']
         instance_definition = self.stack.t['Resources'][conf]
@@ -213,7 +210,9 @@ class InstanceGroup(resource.Resource):
             for lb in self.properties['LoadBalancerNames']:
                 self.stack[lb].json_snippet['Properties']['Instances'] = \
                     inst_list
-                self.stack[lb].update(self.stack[lb].json_snippet)
+                resolved_snippet = self.stack.resolve_static_data(
+                    self.stack[lb].json_snippet)
+                self.stack[lb].update(resolved_snippet)
 
     def FnGetRefId(self):
         return unicode(self.name)
@@ -265,10 +264,6 @@ class AutoScalingGroup(InstanceGroup, CooldownMixin):
     update_allowed_keys = ('Properties',)
     update_allowed_properties = ('MaxSize', 'MinSize',
                                  'Cooldown', 'DesiredCapacity',)
-
-    def __init__(self, name, json_snippet, stack):
-        super(AutoScalingGroup, self).__init__(name, json_snippet, stack)
-        # resource_id is a list of resources
 
     def handle_create(self):
 
@@ -382,9 +377,6 @@ class LaunchConfiguration(resource.Resource):
                                           'Schema': tags_schema}},
     }
 
-    def __init__(self, name, json_snippet, stack):
-        super(LaunchConfiguration, self).__init__(name, json_snippet, stack)
-
 
 class ScalingPolicy(resource.Resource, CooldownMixin):
     properties_schema = {
@@ -403,9 +395,6 @@ class ScalingPolicy(resource.Resource, CooldownMixin):
     update_allowed_keys = ('Properties',)
     update_allowed_properties = ('ScalingAdjustment', 'AdjustmentType',
                                  'Cooldown',)
-
-    def __init__(self, name, json_snippet, stack):
-        super(ScalingPolicy, self).__init__(name, json_snippet, stack)
 
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
         # If Properties has changed, update self.properties, so we

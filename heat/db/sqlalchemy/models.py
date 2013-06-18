@@ -124,7 +124,8 @@ class HeatBase(object):
     def iteritems(self):
         """Make the model object behave like a dict.
 
-        Includes attributes from joins."""
+        Includes attributes from joins.
+        """
         local = dict(self)
         joined = dict([(k, v) for k, v in self.__dict__.iteritems()
                       if not k[0] == '_'])
@@ -196,7 +197,8 @@ class Event(BASE, HeatBase):
     stack_id = Column(String, ForeignKey('stack.id'), nullable=False)
     stack = relationship(Stack, backref=backref('events'))
 
-    name = Column(String)
+    resource_action = Column(String)
+    resource_status = Column(String)
     logical_resource_id = Column(String)
     physical_resource_id = Column(String)
     resource_status_reason = Column(String)
@@ -209,11 +211,12 @@ class Resource(BASE, HeatBase):
 
     __tablename__ = 'resource'
 
-    id = Column(Integer, primary_key=True)
-    state = Column('state', String)
+    id = Column(String, primary_key=True, default=uuidutils.generate_uuid)
+    action = Column('action', String)
+    status = Column('status', String)
     name = Column('name', String, nullable=False)
     nova_instance = Column('nova_instance', String)
-    state_description = Column('state_description', String)
+    status_reason = Column('status_reason', String)
     # odd name as "metadata" is reserved
     rsrc_metadata = Column('rsrc_metadata', Json)
 

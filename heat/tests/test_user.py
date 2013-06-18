@@ -107,7 +107,7 @@ class UserTest(UserPolicyTestCase):
                          stack)
         self.assertEqual(None, rsrc.validate())
         scheduler.TaskRunner(rsrc.create)()
-        self.assertEqual(user.User.CREATE_COMPLETE, rsrc.state)
+        self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
         return rsrc
 
     def test_user(self):
@@ -125,26 +125,26 @@ class UserTest(UserPolicyTestCase):
         self.assertEqual(utils.PhysName('test_stack', 'CfnUser'),
                          rsrc.FnGetRefId())
 
-        self.assertEqual('CREATE_COMPLETE', rsrc.state)
+        self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
         self.assertRaises(resource.UpdateReplace,
                           rsrc.handle_update, {}, {}, {})
 
         rsrc.resource_id = None
         self.assertEqual(None, rsrc.delete())
-        self.assertEqual('DELETE_COMPLETE', rsrc.state)
+        self.assertEqual((rsrc.DELETE, rsrc.COMPLETE), rsrc.state)
 
         rsrc.resource_id = self.fc.access
-        rsrc.state_set('CREATE_COMPLETE')
-        self.assertEqual('CREATE_COMPLETE', rsrc.state)
+        rsrc.state_set(rsrc.CREATE, rsrc.COMPLETE)
+        self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
 
         self.assertEqual(None, rsrc.delete())
-        self.assertEqual('DELETE_COMPLETE', rsrc.state)
+        self.assertEqual((rsrc.DELETE, rsrc.COMPLETE), rsrc.state)
 
-        rsrc.state_set('CREATE_COMPLETE')
-        self.assertEqual('CREATE_COMPLETE', rsrc.state)
+        rsrc.state_set(rsrc.CREATE, rsrc.COMPLETE)
+        self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
 
         self.assertEqual(None, rsrc.delete())
-        self.assertEqual('DELETE_COMPLETE', rsrc.state)
+        self.assertEqual((rsrc.DELETE, rsrc.COMPLETE), rsrc.state)
         self.m.VerifyAll()
 
     def test_user_validate_policies(self):
@@ -161,7 +161,7 @@ class UserTest(UserPolicyTestCase):
         self.assertEqual(self.fc.user_id, rsrc.resource_id)
         self.assertEqual(utils.PhysName('test_stack', 'CfnUser'),
                          rsrc.FnGetRefId())
-        self.assertEqual('CREATE_COMPLETE', rsrc.state)
+        self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
 
         self.assertEqual([u'WebServerAccessPolicy'],
                          rsrc.properties['Policies'])
@@ -222,7 +222,7 @@ class UserTest(UserPolicyTestCase):
         self.assertEqual(self.fc.user_id, rsrc.resource_id)
         self.assertEqual(utils.PhysName('test_stack', 'CfnUser'),
                          rsrc.FnGetRefId())
-        self.assertEqual('CREATE_COMPLETE', rsrc.state)
+        self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
 
         self.assertTrue(rsrc.access_allowed('a_resource'))
         self.assertFalse(rsrc.access_allowed('b_resource'))
@@ -248,7 +248,7 @@ class UserTest(UserPolicyTestCase):
         self.assertEqual(self.fc.user_id, rsrc.resource_id)
         self.assertEqual(utils.PhysName('test_stack', 'CfnUser'),
                          rsrc.FnGetRefId())
-        self.assertEqual('CREATE_COMPLETE', rsrc.state)
+        self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
 
         self.assertTrue(rsrc.access_allowed('a_resource'))
         self.assertFalse(rsrc.access_allowed('b_resource'))
@@ -263,26 +263,29 @@ class AccessKeyTest(UserPolicyTestCase):
                               stack)
         self.assertEqual(None, rsrc.validate())
         scheduler.TaskRunner(rsrc.create)()
-        self.assertEqual(user.AccessKey.CREATE_COMPLETE,
-                         rsrc.state)
+        self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
+        return rsrc
+
+    def create_user(self, t, stack, resource_name):
+        rsrc = stack[resource_name]
+        self.assertEqual(None, rsrc.validate())
+        scheduler.TaskRunner(rsrc.create)()
+        self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
         return rsrc
 
     def test_access_key(self):
         self.m.StubOutWithMock(user.AccessKey, 'keystone')
+        self.m.StubOutWithMock(user.User, 'keystone')
         user.AccessKey.keystone().MultipleTimes().AndReturn(self.fc)
+        user.User.keystone().MultipleTimes().AndReturn(self.fc)
 
         self.m.ReplayAll()
 
         t = template_format.parse(user_accesskey_template)
-        # Override the Ref for UserName with a hard-coded name,
-        # so we don't need to create the User resource
-        username = str(utils.PhysName('test_stack', 'CfnUser'))
-        t['Resources']['HostKeys']['Properties']['UserName'] = username
 
         stack = parse_stack(t)
-        stack.resources['CfnUser'].resource_id = self.fc.user_id
-        stack.resources['CfnUser'].state = 'CREATE_COMPLETE'
 
+        self.create_user(t, stack, 'CfnUser')
         rsrc = self.create_access_key(t, stack, 'HostKeys')
 
         self.assertRaises(resource.UpdateReplace,
@@ -304,17 +307,28 @@ class AccessKeyTest(UserPolicyTestCase):
         self.assertEqual(None, rsrc.delete())
         self.m.VerifyAll()
 
-        # Check for double delete
-        test_key = object()
+    def test_access_key_deleted(self):
+        self.m.StubOutWithMock(user.AccessKey, 'keystone')
+        self.m.StubOutWithMock(user.User, 'keystone')
+        user.AccessKey.keystone().MultipleTimes().AndReturn(self.fc)
+        user.User.keystone().MultipleTimes().AndReturn(self.fc)
+
+        self.m.ReplayAll()
+
+        t = template_format.parse(user_accesskey_template)
+        stack = parse_stack(t)
+
+        self.create_user(t, stack, 'CfnUser')
+        rsrc = self.create_access_key(t, stack, 'HostKeys')
+        self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
+
         self.m.StubOutWithMock(self.fc, 'delete_ec2_keypair')
         NotFound = keystoneclient.exceptions.NotFound
         self.fc.delete_ec2_keypair(self.fc.user_id,
-                                   test_key).AndRaise(NotFound('Gone'))
-
+                                   rsrc.resource_id).AndRaise(NotFound('Gone'))
         self.m.ReplayAll()
-        rsrc.state = rsrc.CREATE_COMPLETE
-        rsrc.resource_id = test_key
         self.assertEqual(None, rsrc.delete())
+
         self.m.VerifyAll()
 
     def test_access_key_no_user(self):
@@ -331,11 +345,10 @@ class AccessKeyTest(UserPolicyTestCase):
                               stack)
         create = scheduler.TaskRunner(rsrc.create)
         self.assertRaises(exception.ResourceFailure, create)
-        self.assertEqual(user.AccessKey.CREATE_FAILED,
-                         rsrc.state)
+        self.assertEqual((rsrc.CREATE, rsrc.FAILED), rsrc.state)
 
         self.assertEqual(None, rsrc.delete())
-        self.assertEqual(user.AccessKey.DELETE_COMPLETE, rsrc.state)
+        self.assertEqual((rsrc.DELETE, rsrc.COMPLETE), rsrc.state)
 
         self.m.VerifyAll()
 
@@ -351,7 +364,7 @@ class AccessPolicyTest(UserPolicyTestCase):
                                  t['Resources'][resource_name],
                                  stack)
         scheduler.TaskRunner(rsrc.create)()
-        self.assertEqual(user.User.CREATE_COMPLETE, rsrc.state)
+        self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
 
     def test_accesspolicy_create_ok_empty(self):
         t = template_format.parse(user_policy_template)
@@ -363,7 +376,7 @@ class AccessPolicyTest(UserPolicyTestCase):
                                  t['Resources'][resource_name],
                                  stack)
         scheduler.TaskRunner(rsrc.create)()
-        self.assertEqual(user.User.CREATE_COMPLETE, rsrc.state)
+        self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
 
     def test_accesspolicy_create_err_notfound(self):
         t = template_format.parse(user_policy_template)

@@ -157,10 +157,10 @@ class Template(collections.Mapping):
             try:
                 r = resources[resource]
                 if r.state in (
-                        r.CREATE_IN_PROGRESS,
-                        r.CREATE_COMPLETE,
-                        r.UPDATE_IN_PROGRESS,
-                        r.UPDATE_COMPLETE):
+                        (r.CREATE, r.IN_PROGRESS),
+                        (r.CREATE, r.COMPLETE),
+                        (r.UPDATE, r.IN_PROGRESS),
+                        (r.UPDATE, r.COMPLETE)):
                     return r.FnGetAtt(att)
             except KeyError:
                 raise exception.InvalidTemplateAttribute(resource=resource,
@@ -244,6 +244,8 @@ class Template(collections.Mapping):
                 return strings[index]
             if isinstance(strings, dict) and isinstance(index, basestring):
                 return strings[index]
+            if strings is None:
+                return ''
 
             raise TypeError('Arguments to "Fn::Select" not fully resolved')
 
@@ -278,6 +280,70 @@ class Template(collections.Mapping):
             return delim.join(empty_for_none(value) for value in strings)
 
         return _resolve(lambda k, v: k == 'Fn::Join', handle_join, s)
+
+    @staticmethod
+    def resolve_split(s):
+        '''
+        Split strings in Fn::Split to a list of sub strings
+        eg the following
+        { "Fn::Split" : [ ",", "str1,str2,str3,str4"]}
+        is reduced to
+        {["str1", "str2", "str3", "str4"]}
+        '''
+        def handle_split(args):
+            if not isinstance(args, (list, tuple)):
+                raise TypeError('Arguments to "Fn::Split" must be a list')
+
+            example = '"Fn::Split" : [ ",", "str1, str2"]]'
+            try:
+                delim, strings = args
+            except ValueError as ex:
+                raise ValueError('Incorrect arguments to "Fn::Split" %s: %s' %
+                                ('should be', example))
+            if not isinstance(strings, basestring):
+                raise TypeError('Incorrect arguments to "Fn::Split" %s: %s' %
+                                ('should be', example))
+            return strings.split(delim)
+        return _resolve(lambda k, v: k == 'Fn::Split', handle_split, s)
+
+    @staticmethod
+    def resolve_replace(s):
+        """
+        Resolve constructs of the form.
+        {"Fn::Replace": [
+          {'$var1': 'foo', '%var2%': 'bar'},
+          '$var1 is %var2%'
+        ]}
+        This is implemented using python str.replace on each key
+        """
+        def handle_replace(args):
+            if not isinstance(args, (list, tuple)):
+                raise TypeError('Arguments to "Fn::Replace" must be a list')
+
+            try:
+                mapping, string = args
+            except ValueError as ex:
+                example = ('{"Fn::Replace": '
+                           '[ {"$var1": "foo", "%var2%": "bar"}, '
+                           '"$var1 is %var2%"]}')
+                raise ValueError(
+                    'Incorrect arguments to "Fn::Replace" %s: %s' %
+                    ('should be', example))
+
+            if not isinstance(mapping, dict):
+                raise TypeError(
+                    'Arguments to "Fn::Replace" not fully resolved')
+            if not isinstance(string, basestring):
+                raise TypeError(
+                    'Arguments to "Fn::Replace" not fully resolved')
+
+            for k, v in mapping.items():
+                if v is None:
+                    v = ''
+                string = string.replace(k, v)
+            return string
+
+        return _resolve(lambda k, v: k == 'Fn::Replace', handle_replace, s)
 
     @staticmethod
     def resolve_base64(s):
