@@ -13,8 +13,13 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import pyrax
+PYRAX_INSTALLED = True
+try:
+    import pyrax
+except ImportError:
+    PYRAX_INSTALLED = False
 
+from heat.common import exception
 from heat.engine import resource
 from heat.openstack.common import log as logging
 
@@ -41,6 +46,7 @@ class RackspaceResource(resource.Resource):
     def cloud_db(self):
         '''Rackspace cloud database client.'''
         if not self._cloud_db:
+            self.__check_library_dependencies()
             self.__authenticate()
             self._cloud_db = self.pyrax.cloud_databases
 
@@ -49,6 +55,7 @@ class RackspaceResource(resource.Resource):
     def cloud_lb(self):
         '''Rackspace cloud loadbalancer client.'''
         if not self._cloud_lb:
+            self.__check_library_dependencies()
             self.__authenticate()
             self._cloud_lb = self.pyrax.cloud_loadbalancers
 
@@ -57,6 +64,7 @@ class RackspaceResource(resource.Resource):
     def cloud_dns(self):
         '''Rackspace cloud dns client.'''
         if not self._cloud_dns:
+            self.__check_library_dependencies()
             self.__authenticate()
             self._cloud_dns = self.pyrax.cloud_dns
 
@@ -65,6 +73,7 @@ class RackspaceResource(resource.Resource):
     def nova(self):
         '''Rackspace cloudservers client.'''
         if not self._cloud_server:
+            self.__check_library_dependencies()
             self.__authenticate()
             self._cloud_server = self.pyrax.cloudservers
 
@@ -73,6 +82,7 @@ class RackspaceResource(resource.Resource):
     def cinder(self):
         '''Rackspace cinder client.'''
         if not self._cloud_blockstore:
+            self.__check_library_dependencies()
             self.__authenticate()
             self._cloud_blockstore = self.pyrax.cloud_blockstorage
 
@@ -81,10 +91,19 @@ class RackspaceResource(resource.Resource):
     def quantum(self):
         '''Rackspace quantum client.'''
         if not self._cloud_nw:
+            self.__check_library_dependencies()
             self.__authenticate()
             self._cloud_nw = self.pyrax.cloud_networks
 
         return self._cloud_nw
+
+    def __check_library_dependencies(self):
+        if PYRAX_INSTALLED:
+            return
+
+        raise exception.NotFound("pyrax moudle was not found. Pyrax client"
+                                 " library is required to work with"
+                                 " Rackspace cloud resources.")
 
     def __authenticate(self):
         # current implemenation shown below authenticates using

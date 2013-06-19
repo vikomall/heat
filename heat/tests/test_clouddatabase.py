@@ -113,10 +113,6 @@ class CloudDBInstanceTest(HeatTestCase):
         self.assertEqual(instance.FnGetAtt('href'), expected_href)
         self.m.VerifyAll()
 
-    def test_clouddbinstance_mapping_validate(self):
-        mapping = clouddatabase.resource_mapping()
-        self.assertTrue('Rackspace::Cloud::DBInstance' in mapping)
-
     def test_clouddbinstance_delete_resource_notfound(self):
         instance = self._setup_test_clouddbinstance('dbinstance_delete')
         instance.resource_id = None
