@@ -114,21 +114,54 @@ blarg: wibble
         data = stacks.InstantiationData(body)
         self.assertRaises(webob.exc.HTTPBadRequest, data.template)
 
-    def test_user_params(self):
+    def test_parameters(self):
         params = {'foo': 'bar', 'blarg': 'wibble'}
         body = {'parameters': params}
         data = stacks.InstantiationData(body)
-        self.assertEqual(data.user_params(), params)
+        self.assertEqual(data.environment(), body)
 
-    def test_user_params_missing(self):
-        params = {'foo': 'bar', 'blarg': 'wibble'}
-        body = {'not the parameters': params}
+    def test_environment_only_params(self):
+        env = {'parameters': {'foo': 'bar', 'blarg': 'wibble'}}
+        body = {'environment': env}
         data = stacks.InstantiationData(body)
-        self.assertEqual(data.user_params(), {})
+        self.assertEqual(data.environment(), env)
+
+    def test_environment_and_parameters(self):
+        body = {'parameters': {'foo': 'bar'},
+                'environment': {'parameters': {'blarg': 'wibble'}}}
+        expect = {'parameters': {'blarg': 'wibble',
+                                 'foo': 'bar'}}
+        data = stacks.InstantiationData(body)
+        self.assertEqual(data.environment(), expect)
+
+    def test_parameters_override_environment(self):
+        # This tests that the cli parameters will override
+        # any parameters in the environment.
+        body = {'parameters': {'foo': 'bar',
+                               'tester': 'Yes'},
+                'environment': {'parameters': {'blarg': 'wibble',
+                                               'tester': 'fail'}}}
+        expect = {'parameters': {'blarg': 'wibble',
+                                 'foo': 'bar',
+                                 'tester': 'Yes'}}
+        data = stacks.InstantiationData(body)
+        self.assertEqual(data.environment(), expect)
+
+    def test_environment_bad_format(self):
+        body = {'environment': {'somethingnotsupported': {'blarg': 'wibble'}}}
+        data = stacks.InstantiationData(body)
+        self.assertRaises(webob.exc.HTTPBadRequest, data.environment)
+
+    def test_environment_missing(self):
+        env = {'foo': 'bar', 'blarg': 'wibble'}
+        body = {'not the environment': env}
+        data = stacks.InstantiationData(body)
+        self.assertEqual(data.environment(), {'parameters': {}})
 
     def test_args(self):
         body = {
             'parameters': {},
+            'environment': {},
             'stack_name': 'foo',
             'template': {},
             'template_url': 'http://example.com/',
@@ -324,7 +357,44 @@ class StackControllerTest(ControllerTest, HeatTestCase):
                   'method': 'create_stack',
                   'args': {'stack_name': identity.stack_name,
                            'template': template,
-                           'params': parameters,
+                           'params': {'parameters': parameters},
+                           'files': {},
+                           'args': {'timeout_mins': 30}},
+                  'version': self.api_version},
+                 None).AndReturn(dict(identity))
+        self.m.ReplayAll()
+
+        try:
+            response = self.controller.create(req,
+                                              tenant_id=identity.tenant,
+                                              body=body)
+        except webob.exc.HTTPCreated as created:
+            self.assertEqual(created.location, self._url(identity))
+        else:
+            self.fail('HTTPCreated not raised')
+        self.m.VerifyAll()
+
+    def test_create_with_files(self):
+        identity = identifier.HeatIdentifier(self.tenant, 'wordpress', '1')
+        template = {u'Foo': u'bar'}
+        json_template = json.dumps(template)
+        parameters = {u'InstanceType': u'm1.xlarge'}
+        body = {'template': template,
+                'stack_name': identity.stack_name,
+                'parameters': parameters,
+                'files': {'my.yaml': 'This is the file contents.'},
+                'timeout_mins': 30}
+
+        req = self._post('/stacks', json.dumps(body))
+
+        self.m.StubOutWithMock(rpc, 'call')
+        rpc.call(req.context, self.topic,
+                 {'namespace': None,
+                  'method': 'create_stack',
+                  'args': {'stack_name': identity.stack_name,
+                           'template': template,
+                           'params': {'parameters': parameters},
+                           'files': {'my.yaml': 'This is the file contents.'},
                            'args': {'timeout_mins': 30}},
                   'version': self.api_version},
                  None).AndReturn(dict(identity))
@@ -358,7 +428,8 @@ class StackControllerTest(ControllerTest, HeatTestCase):
                   'method': 'create_stack',
                   'args': {'stack_name': stack_name,
                            'template': template,
-                           'params': parameters,
+                           'params': {'parameters': parameters},
+                           'files': {},
                            'args': {'timeout_mins': 30}},
                   'version': self.api_version},
                  None).AndRaise(rpc_common.RemoteError("AttributeError"))
@@ -367,7 +438,8 @@ class StackControllerTest(ControllerTest, HeatTestCase):
                   'method': 'create_stack',
                   'args': {'stack_name': stack_name,
                            'template': template,
-                           'params': parameters,
+                           'params': {'parameters': parameters},
+                           'files': {},
                            'args': {'timeout_mins': 30}},
                   'version': self.api_version},
                  None).AndRaise(rpc_common.RemoteError("UnknownUserParameter"))
@@ -401,7 +473,8 @@ class StackControllerTest(ControllerTest, HeatTestCase):
                   'method': 'create_stack',
                   'args': {'stack_name': stack_name,
                            'template': template,
-                           'params': parameters,
+                           'params': {'parameters': parameters},
+                           'files': {},
                            'args': {'timeout_mins': 30}},
                   'version': self.api_version},
                  None).AndRaise(rpc_common.RemoteError("StackExists"))
@@ -430,7 +503,8 @@ class StackControllerTest(ControllerTest, HeatTestCase):
                   'method': 'create_stack',
                   'args': {'stack_name': stack_name,
                            'template': template,
-                           'params': parameters,
+                           'params': {'parameters': parameters},
+                           'files': {},
                            'args': {'timeout_mins': 30}},
                   'version': self.api_version},
                  None).AndRaise(rpc_common.RemoteError(
@@ -708,6 +782,7 @@ class StackControllerTest(ControllerTest, HeatTestCase):
         parameters = {u'InstanceType': u'm1.xlarge'}
         body = {'template': template,
                 'parameters': parameters,
+                'files': {},
                 'timeout_mins': 30}
 
         req = self._put('/stacks/%(stack_name)s/%(stack_id)s' % identity,
@@ -719,7 +794,8 @@ class StackControllerTest(ControllerTest, HeatTestCase):
                   'method': 'update_stack',
                   'args': {'stack_identity': dict(identity),
                            'template': template,
-                           'params': parameters,
+                           'params': {'parameters': parameters},
+                           'files': {},
                            'args': {'timeout_mins': 30}},
                   'version': self.api_version},
                  None).AndReturn(dict(identity))
@@ -740,6 +816,7 @@ class StackControllerTest(ControllerTest, HeatTestCase):
         parameters = {u'InstanceType': u'm1.xlarge'}
         body = {'template': template,
                 'parameters': parameters,
+                'files': {},
                 'timeout_mins': 30}
 
         req = self._put('/stacks/%(stack_name)s/%(stack_id)s' % identity,
@@ -751,7 +828,8 @@ class StackControllerTest(ControllerTest, HeatTestCase):
                   'method': 'update_stack',
                   'args': {'stack_identity': dict(identity),
                            'template': template,
-                           'params': parameters,
+                           'params': {u'parameters': parameters},
+                           'files': {},
                            'args': {'timeout_mins': 30}},
                   'version': self.api_version},
                  None).AndRaise(rpc_common.RemoteError("StackNotFound"))

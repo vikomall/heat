@@ -22,6 +22,7 @@ from oslo.config import cfg
 
 from heat.common import config
 from heat.common import context
+from heat.engine import environment
 from heat.common import exception
 from heat.tests.v1_1 import fakes
 import heat.engine.api as engine_api
@@ -78,10 +79,8 @@ def create_context(mocks, user='stacks_test_user',
 def get_wordpress_stack(stack_name, ctx):
     t = template_format.parse(wp_template)
     template = parser.Template(t)
-    parameters = parser.Parameters(stack_name, template,
-                                   {'KeyName': 'test'})
-
-    stack = parser.Stack(ctx, stack_name, template, parameters)
+    stack = parser.Stack(ctx, stack_name, template,
+                         environment.Environment({'KeyName': 'test'}))
     return stack
 
 
@@ -244,15 +243,13 @@ class stackServiceCreateUpdateDeleteTest(HeatTestCase):
         stack = get_wordpress_stack(stack_name, self.ctx)
 
         self.m.StubOutWithMock(parser, 'Template')
-        self.m.StubOutWithMock(parser, 'Parameters')
+        self.m.StubOutWithMock(environment, 'Environment')
         self.m.StubOutWithMock(parser, 'Stack')
 
-        parser.Template(template).AndReturn(stack.t)
-        parser.Parameters(stack_name,
-                          stack.t,
-                          params).AndReturn(stack.parameters)
+        parser.Template(template, files=None).AndReturn(stack.t)
+        environment.Environment(params).AndReturn(stack.env)
         parser.Stack(self.ctx, stack.name,
-                     stack.t, stack.parameters).AndReturn(stack)
+                     stack.t, stack.env).AndReturn(stack)
 
         self.m.StubOutWithMock(stack, 'validate')
         stack.validate().AndReturn(None)
@@ -263,7 +260,7 @@ class stackServiceCreateUpdateDeleteTest(HeatTestCase):
         self.m.ReplayAll()
 
         result = self.man.create_stack(self.ctx, stack_name,
-                                       template, params, {})
+                                       template, params, None, {})
         self.assertEqual(result, stack.identifier())
         self.assertTrue(isinstance(result, dict))
         self.assertTrue(result['stack_id'])
@@ -277,15 +274,14 @@ class stackServiceCreateUpdateDeleteTest(HeatTestCase):
         stack = get_wordpress_stack(stack_name, self.ctx)
 
         self.m.StubOutWithMock(parser, 'Template')
-        self.m.StubOutWithMock(parser, 'Parameters')
+        self.m.StubOutWithMock(environment, 'Environment')
         self.m.StubOutWithMock(parser, 'Stack')
 
-        parser.Template(template).AndReturn(stack.t)
-        parser.Parameters(stack_name,
-                          stack.t,
-                          params).AndReturn(stack.parameters)
+        parser.Template(template, files=None).AndReturn(stack.t)
+        environment.Environment(params).AndReturn(stack.env)
         parser.Stack(self.ctx, stack.name,
-                     stack.t, stack.parameters).AndReturn(stack)
+                     stack.t,
+                     stack.env).AndReturn(stack)
 
         self.m.StubOutWithMock(stack, 'validate')
         stack.validate().AndRaise(exception.StackValidationFailed(
@@ -297,7 +293,7 @@ class stackServiceCreateUpdateDeleteTest(HeatTestCase):
             exception.StackValidationFailed,
             self.man.create_stack,
             self.ctx, stack_name,
-            template, params, {})
+            template, params, None, {})
         self.m.VerifyAll()
 
     def test_stack_create_invalid_stack_name(self):
@@ -306,7 +302,7 @@ class stackServiceCreateUpdateDeleteTest(HeatTestCase):
 
         self.assertRaises(ValueError,
                           self.man.create_stack,
-                          self.ctx, stack_name, stack.t, {}, {})
+                          self.ctx, stack_name, stack.t, {}, None, {})
 
     def test_stack_create_invalid_resource_name(self):
         stack_name = 'service_create_test_stack_invalid_res'
@@ -318,7 +314,7 @@ class stackServiceCreateUpdateDeleteTest(HeatTestCase):
         self.assertRaises(ValueError,
                           self.man.create_stack,
                           self.ctx, stack_name,
-                          stack.t, {}, {})
+                          stack.t, {}, None, {})
 
     def test_stack_validate(self):
         stack_name = 'service_create_test_validate'
@@ -393,14 +389,12 @@ class stackServiceCreateUpdateDeleteTest(HeatTestCase):
         parser.Stack.load(self.ctx, stack=s).AndReturn(old_stack)
 
         self.m.StubOutWithMock(parser, 'Template')
-        self.m.StubOutWithMock(parser, 'Parameters')
+        self.m.StubOutWithMock(environment, 'Environment')
 
-        parser.Template(template).AndReturn(stack.t)
-        parser.Parameters(stack_name,
-                          stack.t,
-                          params).AndReturn(stack.parameters)
+        parser.Template(template, files=None).AndReturn(stack.t)
+        environment.Environment(params).AndReturn(stack.env)
         parser.Stack(self.ctx, stack.name,
-                     stack.t, stack.parameters).AndReturn(stack)
+                     stack.t, stack.env).AndReturn(stack)
 
         self.m.StubOutWithMock(stack, 'validate')
         stack.validate().AndReturn(None)
@@ -411,7 +405,7 @@ class stackServiceCreateUpdateDeleteTest(HeatTestCase):
         self.m.ReplayAll()
 
         result = self.man.update_stack(self.ctx, old_stack.identifier(),
-                                       template, params, {})
+                                       template, params, None, {})
         self.assertEqual(result, old_stack.identifier())
         self.assertTrue(isinstance(result, dict))
         self.assertTrue(result['stack_id'])
@@ -434,14 +428,12 @@ class stackServiceCreateUpdateDeleteTest(HeatTestCase):
         parser.Stack.load(self.ctx, stack=s).AndReturn(old_stack)
 
         self.m.StubOutWithMock(parser, 'Template')
-        self.m.StubOutWithMock(parser, 'Parameters')
+        self.m.StubOutWithMock(environment, 'Environment')
 
-        parser.Template(template).AndReturn(stack.t)
-        parser.Parameters(stack_name,
-                          stack.t,
-                          params).AndReturn(stack.parameters)
+        parser.Template(template, files=None).AndReturn(stack.t)
+        environment.Environment(params).AndReturn(stack.env)
         parser.Stack(self.ctx, stack.name,
-                     stack.t, stack.parameters).AndReturn(stack)
+                     stack.t, stack.env).AndReturn(stack)
 
         self.m.StubOutWithMock(stack, 'validate')
         stack.validate().AndRaise(exception.StackValidationFailed(
@@ -453,7 +445,7 @@ class stackServiceCreateUpdateDeleteTest(HeatTestCase):
             exception.StackValidationFailed,
             self.man.update_stack,
             self.ctx, old_stack.identifier(),
-            template, params, {})
+            template, params, None, {})
         self.m.VerifyAll()
 
     def test_stack_update_nonexist(self):
@@ -466,7 +458,8 @@ class stackServiceCreateUpdateDeleteTest(HeatTestCase):
 
         self.assertRaises(exception.StackNotFound,
                           self.man.update_stack,
-                          self.ctx, stack.identifier(), template, params, {})
+                          self.ctx, stack.identifier(), template, params,
+                          None, {})
         self.m.VerifyAll()
 
 
@@ -516,7 +509,8 @@ class stackServiceTest(HeatTestCase):
     @stack_context('service_create_existing_test_stack', False)
     def test_stack_create_existing(self):
         self.assertRaises(exception.StackExists, self.eng.create_stack,
-                          self.ctx, self.stack.name, self.stack.t, {}, {})
+                          self.ctx, self.stack.name, self.stack.t, {},
+                          None, {})
 
     @stack_context('service_name_tenants_test_stack', False)
     def test_stack_by_name_tenants(self):

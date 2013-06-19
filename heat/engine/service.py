@@ -24,6 +24,7 @@ from heat.db import api as db_api
 from heat.engine import api
 from heat.engine import clients
 from heat.engine.event import Event
+from heat.engine import environment
 from heat.common import exception
 from heat.common import identifier
 from heat.engine import parameters
@@ -183,17 +184,19 @@ class EngineService(service.Service):
         return list(format_stack_details(stacks))
 
     @request_context
-    def create_stack(self, cnxt, stack_name, template, params, args):
+    def create_stack(self, cnxt, stack_name, template, params, files, args):
         """
         The create_stack method creates a new stack using the template
         provided.
         Note that at this stage the template has already been fetched from the
         heat-api process if using a template-url.
-        arg1 -> RPC context.
-        arg2 -> Name of the stack you want to create.
-        arg3 -> Template of stack you want to create.
-        arg4 -> Stack Input Params
-        arg4 -> Request parameters/args passed from API
+        :param cnxt: RPC context.
+        :param stack_name: Name of the stack you want to create.
+        :param template: Template of stack you want to create.
+        :param params: Stack Input Params
+        :param files: Files referenced from the template
+                      (currently provider templates).
+        :param args: Request parameters/args passed from API
         """
         logger.info('template is %s' % template)
 
@@ -210,14 +213,13 @@ class EngineService(service.Service):
         if db_api.stack_get_by_name(cnxt, stack_name):
             raise exception.StackExists(stack_name=stack_name)
 
-        tmpl = parser.Template(template)
+        tmpl = parser.Template(template, files=files)
 
-        # Extract the template parameters, and any common query parameters
-        template_params = parser.Parameters(stack_name, tmpl, params)
+        # Extract the common query parameters
         common_params = api.extract_args(args)
-
-        stack = parser.Stack(cnxt, stack_name, tmpl, template_params,
-                             **common_params)
+        env = environment.Environment(params)
+        stack = parser.Stack(cnxt, stack_name, tmpl,
+                             env, **common_params)
 
         stack.validate()
 
@@ -228,7 +230,8 @@ class EngineService(service.Service):
         return dict(stack.identifier())
 
     @request_context
-    def update_stack(self, cnxt, stack_identity, template, params, args):
+    def update_stack(self, cnxt, stack_identity, template, params,
+                     files, args):
         """
         The update_stack method updates an existing stack based on the
         provided template and parameters.
@@ -249,13 +252,12 @@ class EngineService(service.Service):
 
         # Now parse the template and any parameters for the updated
         # stack definition.
-        tmpl = parser.Template(template)
+        tmpl = parser.Template(template, files=files)
         stack_name = current_stack.name
-        template_params = parser.Parameters(stack_name, tmpl, params)
         common_params = api.extract_args(args)
-
+        env = environment.Environment(params)
         updated_stack = parser.Stack(cnxt, stack_name, tmpl,
-                                     template_params, **common_params)
+                                     env, **common_params)
 
         updated_stack.validate()
 
