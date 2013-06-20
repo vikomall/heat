@@ -13,6 +13,8 @@
 #    under the License.
 
 
+from heat.engine import environment
+from heat.engine import resource
 from heat.engine.resources.rackspace import clouddatabase
 from heat.common import exception
 from heat.common import template_format
@@ -72,13 +74,20 @@ class CloudDBInstanceTest(HeatTestCase):
     def setUp(self):
         super(CloudDBInstanceTest, self).setUp()
         setup_dummy_db()
+        # Test environment may not have pyrax client library installed and if
+        # pyrax is not installed resource class would not be registered.
+        # So register resource provider class explicitly for unit testing.
+        resource._register_class("Rackspace::Cloud::DBInstance",
+                                 clouddatabase.CloudDBInstance)
 
     def _setup_test_clouddbinstance(self, name):
         stack_name = '%s_stack' % name
         t = template_format.parse(wp_template)
         template = parser.Template(t)
-        params = parser.Parameters(stack_name, template, {'KeyName': 'test'})
-        stack = parser.Stack(None, stack_name, template, params,
+        stack = parser.Stack(None,
+                             stack_name,
+                             template,
+                             environment.Environment({'InstanceName': 'test'}),
                              stack_id=uuidutils.generate_uuid())
 
         t['Resources']['MySqlCloudDB']['Properties']['InstanceName'] = 'Test'

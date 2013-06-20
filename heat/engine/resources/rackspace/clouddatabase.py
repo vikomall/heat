@@ -178,14 +178,13 @@ class CloudDBInstance(rackspace_resource.RackspaceResource):
         elif key == 'href':
             return self.href
 
-try:
-    import pyrax  # noqa
-    # pyrax module is required to work with Rackspace cloud database provider.
-    # If it is not installed, don't register clouddatabase provider
 
-    def resource_mapping():
+# pyrax module is required to work with Rackspace cloud database provider.
+# If it is not installed, don't register clouddatabase provider
+def resource_mapping():
+    if rackspace_resource.PYRAX_INSTALLED:
         return {
             'Rackspace::Cloud::DBInstance': CloudDBInstance,
         }
-except ImportError:
-    pass
+    else:
+        return {}
