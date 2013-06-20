@@ -13,12 +13,12 @@
 #    under the License.
 
 
-from heat.engine import environment
-from heat.engine import resource
-from heat.engine.resources.rackspace import clouddatabase
 from heat.common import exception
 from heat.common import template_format
 from heat.engine import parser
+from heat.engine import environment
+from heat.engine import resource
+from heat.engine.resources.rackspace import clouddatabase
 from heat.openstack.common import uuidutils
 from heat.tests.common import HeatTestCase
 from heat.tests.utils import setup_dummy_db
