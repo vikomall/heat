@@ -18,24 +18,19 @@ import sqlalchemy
 def upgrade(migrate_engine):
     meta = sqlalchemy.MetaData(bind=migrate_engine)
 
-    resource = sqlalchemy.Table('resource', meta, autoload=True)
-    # Align the current state/state_description with the
-    # action/status now used in the event table
+    stack = sqlalchemy.Table('stack', meta, autoload=True)
+    # Align with action/status now used in the event/resource tables
     action = sqlalchemy.Column('action',
                                sqlalchemy.String(length=255,
                                                  convert_unicode=False,
                                                  assert_unicode=None,
                                                  unicode_error=None,
                                                  _warn_on_bytestring=False))
-    action.create(resource)
-    resource.c.state.alter(name='status')
-    resource.c.state_description.alter(name='status_reason')
+    action.create(stack)
 
 
 def downgrade(migrate_engine):
     meta = sqlalchemy.MetaData(bind=migrate_engine)
 
-    resource = sqlalchemy.Table('resource', meta, autoload=True)
-    resource.c.status.drop()
-    resource.c.status.alter(name='state')
-    resource.c.status_reason.alter(name='state_description')
+    stack = sqlalchemy.Table('stack', meta, autoload=True)
+    stack.c.action.drop()
