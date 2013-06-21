@@ -22,45 +22,51 @@ logger = logging.getLogger(__name__)
 
 class CloudDBInstance(rackspace_resource.RackspaceResource):
     database_schema = {
-        "character_set": {
+        "Character_set": {
             "Type": "String",
             "Default": "utf8",
             "Required": False
         },
-        "collate": {
+        "Collate": {
             "Type": "String",
             "Default": "utf8_general_ci",
             "Required": False
         },
-        "name": {
+        "Name": {
             "Type": "String",
-            "Required": False
+            "Required": True,
+            "MaxLength": "64",
+            "AllowedPattern": "[a-zA-Z0-9_]+[a-zA-Z0-9_@?#\s]*[a-zA-Z0-9_]+"
         }
     }
 
     user_schema = {
-        "name": {
+        "Name": {
             "Type": "String",
-            "Required": False
+            "Required": True,
+            "MaxLength": "16",
+            "AllowedPattern": "[a-zA-Z0-9_]+[a-zA-Z0-9_@?#\s]*[a-zA-Z0-9_]+"
         },
-        "password": {
+        "Password": {
             "Type": "String",
-            "Required": False
+            "Required": True,
+            "AllowedPattern": "[a-zA-Z0-9_]+[a-zA-Z0-9_@?#\s]*[a-zA-Z0-9_]+"
         },
-        "host": {
+        "Host": {
             "Type": "String",
             "Default": "%"
         },
-        "databases": {
+        "Databases": {
             "Type": "List",
-            "Required": False
+            "Required": True
         }
     }
 
     properties_schema = {
         "InstanceName": {
             "Type": "String",
-            "Required": True
+            "Required": True,
+            "MaxLength": "255"
         },
 
         "FlavorRef": {
@@ -99,20 +105,13 @@ class CloudDBInstance(rackspace_resource.RackspaceResource):
         self.hostname = None
         self.href = None
 
-    @staticmethod
-    def authenticated():
-        rackspace_resource.RackspaceResource.authenticate = False
-
     def handle_create(self):
         logger.debug("CloudDatabase handle_create called")
         self.sqlinstancename = self.properties['InstanceName']
         self.flavor = self.properties['FlavorRef']
         self.volume = self.properties['VolumeSize']
-
-        self.databases = []
-        self.databases = self.properties['Databases']
-        self.users = []
-        self.users = self.properties['Users']
+        self.databases = self.properties.get('Databases', None)
+        self.users = self.properties.get('Users', None)
 
         # create db instance
         logger.info("Creating could db instance %s" % self.sqlinstancename)
@@ -131,6 +130,7 @@ class CloudDBInstance(rackspace_resource.RackspaceResource):
             instance.get()
 
         if instance.status == 'ERROR':
+            instance.delete()
             logger.debug("ERROR: Cloud DB instance creation failed.")
             raise exception.Error("Cloud DB instance creation failed.")
 
@@ -143,20 +143,20 @@ class CloudDBInstance(rackspace_resource.RackspaceResource):
             # create databases
             for database in self.databases:
                 instance.create_database(
-                    database['name'],
-                    character_set=database['character_set'],
-                    collate=database['collate'])
+                    database['Name'],
+                    character_set=database['Character_set'],
+                    collate=database['Collate'])
                 logger.info("Database %s created on SQL instance %s" %
-                            (database['name'], self.sqlinstancename))
+                            (database['Name'], self.sqlinstancename))
 
             # add users
             dbs = []
             for user in self.users:
-                if user['databases']:
-                    dbs = user['databases']
-                instance.create_user(user['name'], user['password'], dbs)
+                if user['Databases']:
+                    dbs = user['Databases']
+                instance.create_user(user['Name'], user['Password'], dbs)
                 logger.info("Database user %s created successfully" %
-                            (user['name']))
+                            (user['Name']))
 
             return True
         except Exception as ex:
@@ -172,10 +172,50 @@ class CloudDBInstance(rackspace_resource.RackspaceResource):
                                              stack_name=self.stack.name)
         instances = self.cloud_db().delete(self.resource_id)
 
-    def FnGetAtt(self, key):
-        if key == 'hostname':
+    def validate(self):
+        '''
+        Validate any of the provided params
+        '''
+        res = super(CloudDBInstance, self).validate()
+        if res:
+            return res
+
+        # check validity of user and databases
+        users = self.properties.get('Users', None)
+        if not users:
+            return
+
+        databases = self.properties.get('Databases', None)
+        if not databases:
+            return {'Error':
+                    'Databases property is required if Users property'
+                    ' is provided'}
+
+        for user in users:
+            if not user['Databases']:
+                return {'Error':
+                        'Must provide access to at least one database for '
+                        'user:%s' % (user['Name'])}
+
+            userdbs = user['Databases']
+            for userdb in userdbs:
+                db_exists = False
+                for database in databases:
+                    if userdb == database['Name']:
+                        db_exists = True
+                        break
+
+                if not db_exists:
+                    return {'Error':
+                            'Database %s specified for user does not exist in '
+                            'databases.' % userdb}
+
+        return
+
+    def _resolve_attribute(self, name):
+        if name == 'hostname':
             return self.hostname
-        elif key == 'href':
+        elif name == 'href':
             return self.href
 
 

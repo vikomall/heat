@@ -80,7 +80,7 @@ class CloudDBInstanceTest(HeatTestCase):
         resource._register_class("Rackspace::Cloud::DBInstance",
                                  clouddatabase.CloudDBInstance)
 
-    def _setup_test_clouddbinstance(self, name):
+    def _setup_test_clouddbinstance(self, name, inject_property_error=False):
         stack_name = '%s_stack' % name
         t = template_format.parse(wp_template)
         template = parser.Template(t)
@@ -93,6 +93,23 @@ class CloudDBInstanceTest(HeatTestCase):
         t['Resources']['MySqlCloudDB']['Properties']['InstanceName'] = 'Test'
         t['Resources']['MySqlCloudDB']['Properties']['FlavorRef'] = '1GB'
         t['Resources']['MySqlCloudDB']['Properties']['VolumeSize'] = '30'
+
+        if inject_property_error:
+            # database name given in users list is not a valid database
+            t['Resources']['MySqlCloudDB']['Properties']['Databases'] = \
+                [{"Name": "onedb"}]
+            t['Resources']['MySqlCloudDB']['Properties']['Users'] = \
+                [{"Name": "testuser",
+                  "Password": "pass",
+                  "Databases": ["invaliddb"]}]
+        else:
+            t['Resources']['MySqlCloudDB']['Properties']['Databases'] = \
+                [{"Name": "validdb"}]
+            t['Resources']['MySqlCloudDB']['Properties']['Users'] = \
+                [{"Name": "testuser",
+                  "Password": "pass",
+                  "Databases": ["validdb"]}]
+
         instance = clouddatabase.CloudDBInstance(
             '%s_name' % name,
             t['Resources']['MySqlCloudDB'],
@@ -118,8 +135,9 @@ class CloudDBInstanceTest(HeatTestCase):
         instance.handle_create()
         expected_hostname = fakedbinstance.hostname
         expected_href = fakedbinstance.links[0]['href']
-        self.assertEqual(instance.FnGetAtt('hostname'), expected_hostname)
-        self.assertEqual(instance.FnGetAtt('href'), expected_href)
+        self.assertEqual(instance._resolve_attribute('hostname'),
+                         expected_hostname)
+        self.assertEqual(instance._resolve_attribute('href'), expected_href)
         self.m.VerifyAll()
 
     def test_clouddbinstance_delete_resource_notfound(self):
@@ -137,4 +155,21 @@ class CloudDBInstanceTest(HeatTestCase):
         fake_client.delete(1234).AndReturn(None)
         self.m.ReplayAll()
         instance.handle_delete()
+        self.m.VerifyAll()
+
+    def test_clouddbinstance_param_validation_success(self):
+        instance = self._setup_test_clouddbinstance(
+            'dbinstance_params',
+            inject_property_error=False)
+        self.m.ReplayAll()
+        ret = instance.validate()
+        self.assertEqual(ret, None)
+        self.m.VerifyAll()
+
+    def test_clouddbinstance_param_validation_fail(self):
+        instance = self._setup_test_clouddbinstance('dbinstance_params',
+                                                    inject_property_error=True)
+        self.m.ReplayAll()
+        ret = instance.validate()
+        self.assertTrue('Error' in ret)
         self.m.VerifyAll()
