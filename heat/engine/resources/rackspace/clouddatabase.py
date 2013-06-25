@@ -126,9 +126,8 @@ class CloudDBInstance(rackspace_resource.RackspaceResource):
         return instance
 
     def check_create_complete(self, instance):
-        if instance.status != 'ACTIVE':
-            instance.get()
 
+        instance.get()  # get updated attributes
         if instance.status == 'ERROR':
             instance.delete()
             logger.debug("ERROR: Cloud DB instance creation failed.")
@@ -139,38 +138,34 @@ class CloudDBInstance(rackspace_resource.RackspaceResource):
 
         logger.info("SQL instance %s created (flavor:%s, volume:%s)" %
                     (self.sqlinstancename, self.flavor, self.volume))
-        try:
-            # create databases
-            for database in self.databases:
-                instance.create_database(
-                    database['Name'],
-                    character_set=database['Character_set'],
-                    collate=database['Collate'])
-                logger.info("Database %s created on SQL instance %s" %
-                            (database['Name'], self.sqlinstancename))
+        # create databases
+        for database in self.databases:
+            instance.create_database(
+                database['Name'],
+                character_set=database['Character_set'],
+                collate=database['Collate'])
+            logger.info("Database %s created on SQL instance %s" %
+                        (database['Name'], self.sqlinstancename))
 
-            # add users
-            dbs = []
-            for user in self.users:
-                if user['Databases']:
-                    dbs = user['Databases']
-                instance.create_user(user['Name'], user['Password'], dbs)
-                logger.info("Database user %s created successfully" %
-                            (user['Name']))
-
-            return True
-        except Exception as ex:
-            logger.debug("ERROR: exception %s" % ex)
-            raise ex
+        # add users
+        dbs = []
+        for user in self.users:
+            if user['Databases']:
+                dbs = user['Databases']
+            instance.create_user(user['Name'], user['Password'], dbs)
+            logger.info("Database user %s created successfully" %
+                        (user['Name']))
+        return True
 
     def handle_delete(self):
         logger.debug("CloudDatabase handle_delete called.")
         sqlinstancename = self.properties['InstanceName']
         if self.resource_id is None:
-            logger.debug("resourc_id is null and returning without delete.")
+            logger.debug("resource_id is null and returning without delete.")
             raise exception.ResourceNotFound(resource_name=sqlinstancename,
                                              stack_name=self.stack.name)
         instances = self.cloud_db().delete(self.resource_id)
+        self.resource_id = None
 
     def validate(self):
         '''
@@ -195,21 +190,14 @@ class CloudDBInstance(rackspace_resource.RackspaceResource):
             if not user['Databases']:
                 return {'Error':
                         'Must provide access to at least one database for '
-                        'user:%s' % (user['Name'])}
+                        'user %s' % user['Name']}
 
-            userdbs = user['Databases']
-            for userdb in userdbs:
-                db_exists = False
-                for database in databases:
-                    if userdb == database['Name']:
-                        db_exists = True
-                        break
-
-                if not db_exists:
-                    return {'Error':
-                            'Database %s specified for user does not exist in '
-                            'databases.' % userdb}
-
+            missing_db = [db_name for db_name in user['Databases']
+                          if db_name not in [db['Name'] for db in databases]]
+            if missing_db:
+                return {'Error':
+                        'Database %s specified for user does not exist in '
+                        'databases.' % missing_db}
         return
 
     def _resolve_attribute(self, name):

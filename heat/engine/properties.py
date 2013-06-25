@@ -109,13 +109,13 @@ class Property(object):
             min_length = int(self.schema[MIN_LENGTH])
             if len(value) < min_length:
                 raise ValueError('Minimum string length is %d characters.' %
-                                 (min_length))
+                                 min_length)
 
         if MAX_LENGTH in self.schema:
             max_length = int(self.schema[MAX_LENGTH])
             if len(value) > max_length:
                 raise ValueError('Maximum string length is %d characters.' %
-                                 (max_length))
+                                 max_length)
         return value
 
     def _validate_map(self, value):
