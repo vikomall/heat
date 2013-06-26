@@ -114,7 +114,7 @@ class CloudDBInstance(rackspace_resource.RackspaceResource):
         self.users = self.properties.get('Users', None)
 
         # create db instance
-        logger.info("Creating could db instance %s" % self.sqlinstancename)
+        logger.info("Creating Cloud DB instance %s" % self.sqlinstancename)
         instance = self.cloud_db().create(self.sqlinstancename,
                                           flavor=self.flavor,
                                           volume=self.volume)
