@@ -30,6 +30,7 @@ import heat.api.openstack.v1 as api_v1
 import heat.api.openstack.v1.stacks as stacks
 import heat.api.openstack.v1.resources as resources
 import heat.api.openstack.v1.events as events
+import heat.api.openstack.v1.actions as actions
 
 
 class InstantiationDataTest(HeatTestCase):
@@ -303,6 +304,67 @@ class StackControllerTest(ControllerTest, HeatTestCase):
                 }
             ]
         }
+        self.assertEqual(result, expected)
+        self.m.VerifyAll()
+
+    def test_detail(self):
+        req = self._get('/stacks/detail')
+
+        identity = identifier.HeatIdentifier(self.tenant, 'wordpress', '1')
+
+        engine_resp = [
+            {
+                u'stack_identity': dict(identity),
+                u'updated_time': u'2012-07-09T09:13:11Z',
+                u'template_description': u'blah',
+                u'description': u'blah',
+                u'stack_status_reason': u'Stack successfully created',
+                u'creation_time': u'2012-07-09T09:12:45Z',
+                u'stack_name': identity.stack_name,
+                u'stack_action': u'CREATE',
+                u'stack_status': u'COMPLETE',
+                u'parameters': {'foo': 'bar'},
+                u'outputs': ['key', 'value'],
+                u'notification_topics': [],
+                u'capabilities': [],
+                u'disable_rollback': True,
+                u'timeout_mins': 60,
+            }
+        ]
+        self.m.StubOutWithMock(rpc, 'call')
+        rpc.call(req.context, self.topic,
+                 {'namespace': None,
+                  'method': 'list_stacks',
+                  'args': {},
+                  'version': self.api_version},
+                 None).AndReturn(engine_resp)
+        self.m.ReplayAll()
+
+        result = self.controller.detail(req, tenant_id=identity.tenant)
+
+        expected = {
+            'stacks': [
+                {
+                    'links': [{"href": self._url(identity),
+                               "rel": "self"}],
+                    'id': '1',
+                    u'updated_time': u'2012-07-09T09:13:11Z',
+                    u'template_description': u'blah',
+                    u'description': u'blah',
+                    u'stack_status_reason': u'Stack successfully created',
+                    u'creation_time': u'2012-07-09T09:12:45Z',
+                    u'stack_name': identity.stack_name,
+                    u'stack_status': u'CREATE_COMPLETE',
+                    u'parameters': {'foo': 'bar'},
+                    u'outputs': ['key', 'value'],
+                    u'notification_topics': [],
+                    u'capabilities': [],
+                    u'disable_rollback': True,
+                    u'timeout_mins': 60,
+                }
+            ]
+        }
+
         self.assertEqual(result, expected)
         self.m.VerifyAll()
 
@@ -1818,6 +1880,15 @@ class RoutesTest(HeatTestCase):
             {
                 'tenant_id': 'aaaa'
             })
+        self.assertRoute(
+            self.m,
+            '/aaaa/stacks/detail',
+            'GET',
+            'detail',
+            'StackController',
+            {
+                'tenant_id': 'aaaa'
+            })
 
     def test_stack_data(self):
         self.assertRoute(
@@ -1900,6 +1971,32 @@ class RoutesTest(HeatTestCase):
                 'tenant_id': 'aaaa',
                 'stack_name': 'teststack',
                 'path': 'template'
+            })
+
+    def test_stack_post_actions(self):
+        self.assertRoute(
+            self.m,
+            '/aaaa/stacks/teststack/bbbb/actions',
+            'POST',
+            'action',
+            'ActionController',
+            {
+                'tenant_id': 'aaaa',
+                'stack_name': 'teststack',
+                'stack_id': 'bbbb',
+            })
+
+    def test_stack_post_actions_lookup_redirect(self):
+        self.assertRoute(
+            self.m,
+            '/aaaa/stacks/teststack/actions',
+            'POST',
+            'lookup',
+            'StackController',
+            {
+                'tenant_id': 'aaaa',
+                'stack_name': 'teststack',
+                'path': 'actions'
             })
 
     def test_stack_update_delete(self):
@@ -2000,3 +2097,140 @@ class RoutesTest(HeatTestCase):
                 'resource_name': 'cccc',
                 'event_id': 'dddd'
             })
+
+
+class ActionControllerTest(ControllerTest, HeatTestCase):
+    '''
+    Tests the API class which acts as the WSGI controller,
+    the endpoint processing API requests after they are routed
+    '''
+
+    def setUp(self):
+        super(ActionControllerTest, self).setUp()
+        # Create WSGI controller instance
+
+        class DummyConfig():
+            bind_port = 8004
+
+        cfgopts = DummyConfig()
+        self.controller = actions.ActionController(options=cfgopts)
+
+    def test_action_suspend(self):
+        res_name = 'WikiDatabase'
+        stack_identity = identifier.HeatIdentifier(self.tenant,
+                                                   'wordpress', '1')
+        body = {'suspend': None}
+        req = self._post(stack_identity._tenant_path() + '/actions',
+                         data=json.dumps(body))
+
+        self.m.StubOutWithMock(rpc, 'call')
+        rpc.call(req.context, self.topic,
+                 {'namespace': None,
+                  'method': 'stack_suspend',
+                  'args': {'stack_identity': stack_identity},
+                  'version': self.api_version},
+                 None).AndReturn(None)
+        self.m.ReplayAll()
+
+        result = self.controller.action(req, tenant_id=self.tenant,
+                                        stack_name=stack_identity.stack_name,
+                                        stack_id=stack_identity.stack_id,
+                                        body=body)
+        self.assertEqual(result, None)
+        self.m.VerifyAll()
+
+    def test_action_badaction(self):
+        res_name = 'WikiDatabase'
+        stack_identity = identifier.HeatIdentifier(self.tenant,
+                                                   'wordpress', '1')
+        body = {'notallowed': None}
+        req = self._post(stack_identity._tenant_path() + '/actions',
+                         data=json.dumps(body))
+
+        self.m.ReplayAll()
+
+        self.assertRaises(webob.exc.HTTPBadRequest, self.controller.action,
+                          req, tenant_id=self.tenant,
+                          stack_name=stack_identity.stack_name,
+                          stack_id=stack_identity.stack_id,
+                          body=body)
+        self.m.VerifyAll()
+
+    def test_action_badaction_empty(self):
+        res_name = 'WikiDatabase'
+        stack_identity = identifier.HeatIdentifier(self.tenant,
+                                                   'wordpress', '1')
+        body = {}
+        req = self._post(stack_identity._tenant_path() + '/actions',
+                         data=json.dumps(body))
+
+        self.m.ReplayAll()
+
+        self.assertRaises(webob.exc.HTTPBadRequest, self.controller.action,
+                          req, tenant_id=self.tenant,
+                          stack_name=stack_identity.stack_name,
+                          stack_id=stack_identity.stack_id,
+                          body=body)
+        self.m.VerifyAll()
+
+    def test_action_badaction_multiple(self):
+        res_name = 'WikiDatabase'
+        stack_identity = identifier.HeatIdentifier(self.tenant,
+                                                   'wordpress', '1')
+        body = {'one': None, 'two': None}
+        req = self._post(stack_identity._tenant_path() + '/actions',
+                         data=json.dumps(body))
+
+        self.m.ReplayAll()
+
+        self.assertRaises(webob.exc.HTTPBadRequest, self.controller.action,
+                          req, tenant_id=self.tenant,
+                          stack_name=stack_identity.stack_name,
+                          stack_id=stack_identity.stack_id,
+                          body=body)
+        self.m.VerifyAll()
+
+    def test_action_rmt_aterr(self):
+        res_name = 'WikiDatabase'
+        stack_identity = identifier.HeatIdentifier(self.tenant,
+                                                   'wordpress', '1')
+        body = {'suspend': None}
+        req = self._post(stack_identity._tenant_path() + '/actions',
+                         data=json.dumps(body))
+
+        self.m.StubOutWithMock(rpc, 'call')
+        rpc.call(req.context, self.topic,
+                 {'namespace': None,
+                  'method': 'stack_suspend',
+                  'args': {'stack_identity': stack_identity},
+                  'version': self.api_version},
+                 None).AndRaise(rpc_common.RemoteError("AttributeError"))
+        self.m.ReplayAll()
+
+        self.assertRaises(webob.exc.HTTPBadRequest, self.controller.action,
+                          req, tenant_id=self.tenant,
+                          stack_name=stack_identity.stack_name,
+                          stack_id=stack_identity.stack_id,
+                          body=body)
+
+        self.m.VerifyAll()
+
+    def test_action_badaction_ise(self):
+        res_name = 'WikiDatabase'
+        stack_identity = identifier.HeatIdentifier(self.tenant,
+                                                   'wordpress', '1')
+        body = {'oops': None}
+        req = self._post(stack_identity._tenant_path() + '/actions',
+                         data=json.dumps(body))
+
+        self.m.ReplayAll()
+
+        self.controller.ACTIONS = (SUSPEND, NEW) = ('suspend', 'oops')
+
+        self.assertRaises(webob.exc.HTTPInternalServerError,
+                          self.controller.action,
+                          req, tenant_id=self.tenant,
+                          stack_name=stack_identity.stack_name,
+                          stack_id=stack_identity.stack_id,
+                          body=body)
+        self.m.VerifyAll()

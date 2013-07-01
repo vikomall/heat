@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 
 
 _resource_classes = {}
+_template_class = None
 
 
 def get_types():
@@ -45,7 +46,11 @@ def get_class(resource_type, resource_name=None, environment=None):
     if environment:
         resource_type = environment.get_resource_type(resource_type,
                                                       resource_name)
-    cls = _resource_classes.get(resource_type)
+
+    if resource_type.endswith(('.yaml', '.template')):
+        cls = _template_class
+    else:
+        cls = _resource_classes.get(resource_type)
     if cls is None:
         msg = "Unknown resource Type : %s" % resource_type
         raise exception.StackValidationFailed(message=msg)
@@ -60,6 +65,12 @@ def _register_class(resource_type, resource_class):
                        resource_type)
 
     _resource_classes[resource_type] = resource_class
+
+
+def register_template_class(cls):
+    global _template_class
+    if _template_class is None:
+        _template_class = cls
 
 
 class UpdateReplace(Exception):
@@ -324,6 +335,12 @@ class Resource(object):
         corresponding handle_* and check_*_complete functions
         Note pre_func is an optional function reference which will
         be called before the handle_<action> function
+
+        If the resource does not declare a check_$action_complete function,
+        we declare COMPLETE status as soon as the handle_$action call has
+        finished, and if no handle_$action function is declared, then we do
+        nothing, useful e.g if the resource requires no action for a given
+        state transition
         '''
         assert action in self.ACTIONS, 'Invalid action %s' % action
 
@@ -379,26 +396,6 @@ class Resource(object):
                                      self.name)
         return self._do_action(self.CREATE, self.properties.validate)
 
-    def check_create_complete(self, create_data):
-        '''
-        Check if the resource is active (ready to move to the CREATE_COMPLETE
-        state). By default this happens as soon as the handle_create() method
-        has completed successfully, but subclasses may customise this by
-        overriding this function. The return value of handle_create() is
-        passed in to this function each time it is called.
-        '''
-        return True
-
-    def check_suspend_complete(self, suspend_data):
-        '''
-        Check if the resource is suspended
-        By default this happens as soon as the handle_suspend() method
-        has completed successfully, but subclasses may customise this by
-        overriding this function. The return value of handle_suspend() is
-        passed in to this function each time it is called.
-        '''
-        return True
-
     def update(self, json_snippet=None):
         '''
         update the resource. Subclasses should provide a handle_update() method
@@ -447,9 +444,7 @@ class Resource(object):
         instances is a non-immediate operation and we want to paralellize
         '''
         # Don't try to suspend the resource unless it's in a stable state
-        if self.state not in ((self.CREATE, self.COMPLETE),
-                              (self.UPDATE, self.COMPLETE),
-                              (self.ROLLBACK, self.COMPLETE)):
+        if (self.action == self.DELETE or self.status != self.COMPLETE):
             exc = exception.Error('State %s invalid for suspend'
                                   % str(self.state))
             raise exception.ResourceFailure(exc)

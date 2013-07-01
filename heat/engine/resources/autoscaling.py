@@ -132,14 +132,35 @@ class InstanceGroup(resource.Resource):
         instance_definition = self.stack.t['Resources'][conf]
         return GroupedInstance(name, instance_definition, self.stack)
 
-    def handle_delete(self):
+    def _instances(self):
+        '''
+        Convert the stored instance list into a list of GroupedInstance objects
+        '''
+        gi_list = []
         if self.resource_id is not None:
             inst_list = self.resource_id.split(',')
-            logger.debug('handle_delete %s' % str(inst_list))
-            for victim in inst_list:
-                logger.debug('handle_delete %s' % victim)
-                inst = self._make_instance(victim)
-                inst.destroy()
+            for i in inst_list:
+                gi_list.append(self._make_instance(i))
+        return gi_list
+
+    def handle_delete(self):
+        for inst in self._instances():
+            logger.debug('handle_delete %s' % inst.name)
+            inst.destroy()
+
+    def handle_suspend(self):
+        cookie_list = []
+        for inst in self._instances():
+            logger.debug('handle_suspend %s' % inst.name)
+            inst_cookie = inst.handle_suspend()
+            cookie_list.append((inst, inst_cookie))
+        return cookie_list
+
+    def check_suspend_complete(self, cookie_list):
+        for inst, inst_cookie in cookie_list:
+            if not inst.check_suspend_complete(inst_cookie):
+                return False
+        return True
 
     @scheduler.wrappertask
     def _scale(self, instance_task, indices):
@@ -171,9 +192,15 @@ class InstanceGroup(resource.Resource):
 
             try:
                 yield inst.create()
-            except exception.ResourceFailure:
+            except exception.ResourceFailure as ex:
                 if raise_on_error:
                     raise
+                # Handle instance creation failure locally by destroying the
+                # failed instance to avoid orphaned instances costing user
+                # extra memory
+                logger.warn('Creating %s instance %d failed %s, destroying'
+                            % (str(self), index, str(ex)))
+                inst.destroy()
             else:
                 inst_list.append(name)
                 self.resource_id_set(','.join(inst_list))
@@ -192,7 +219,8 @@ class InstanceGroup(resource.Resource):
                 inst = self._make_instance(victim)
                 inst.destroy()
                 inst_list.remove(victim)
-                self.resource_id_set(','.join(inst_list))
+                # If we shrink to zero, set resource_id back to None
+                self.resource_id_set(','.join(inst_list) or None)
 
             self._lb_reload()
 
