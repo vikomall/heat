@@ -32,6 +32,8 @@ from heat.engine.clients import Clients
 from heat.db import api as db_api
 
 from heat.openstack.common import log as logging
+from heat.openstack.common.gettextutils import _
+
 from heat.common.exception import ServerError
 from heat.common.exception import StackValidationFailed
 
@@ -42,8 +44,9 @@ logger = logging.getLogger(__name__)
 
 class Stack(object):
 
-    ACTIONS = (CREATE, DELETE, UPDATE, ROLLBACK, SUSPEND
-               ) = ('CREATE', 'DELETE', 'UPDATE', 'ROLLBACK', 'SUSPEND')
+    ACTIONS = (CREATE, DELETE, UPDATE, ROLLBACK, SUSPEND, RESUME
+               ) = ('CREATE', 'DELETE', 'UPDATE', 'ROLLBACK', 'SUSPEND',
+                    'RESUME')
 
     STATUSES = (IN_PROGRESS, FAILED, COMPLETE
                 ) = ('IN_PROGRESS', 'FAILED', 'COMPLETE')
@@ -56,7 +59,7 @@ class Stack(object):
     def __init__(self, context, stack_name, tmpl, env=None,
                  stack_id=None, action=None, status=None,
                  status_reason='', timeout_mins=60, resolve_data=True,
-                 disable_rollback=True):
+                 disable_rollback=True, parent_resource=None):
         '''
         Initialise from a context, name, Template object and (optionally)
         Environment object. The database ID may also be initialised, if the
@@ -79,6 +82,7 @@ class Stack(object):
         self.status_reason = status_reason
         self.timeout_mins = timeout_mins
         self.disable_rollback = disable_rollback
+        self.parent_resource = parent_resource
 
         resources.initialise()
 
@@ -124,7 +128,8 @@ class Stack(object):
         return deps
 
     @classmethod
-    def load(cls, context, stack_id=None, stack=None, resolve_data=True):
+    def load(cls, context, stack_id=None, stack=None, resolve_data=True,
+             parent_resource=None):
         '''Retrieve a Stack from the database.'''
         if stack is None:
             stack = db_api.stack_get(context, stack_id)
@@ -136,7 +141,8 @@ class Stack(object):
         env = environment.Environment(stack.parameters)
         stack = cls(context, stack.name, template, env,
                     stack.id, stack.action, stack.status, stack.status_reason,
-                    stack.timeout, resolve_data, stack.disable_rollback)
+                    stack.timeout, resolve_data, stack.disable_rollback,
+                    parent_resource)
 
         return stack
 
@@ -370,10 +376,6 @@ class Stack(object):
         self.state_set(self.UPDATE, self.IN_PROGRESS,
                        'Stack %s started' % action)
 
-        # cache all the resources runtime data.
-        for r in self:
-            r.cache_template()
-
         try:
             update_task = update.StackUpdate(self, newstack)
             updater = scheduler.TaskRunner(update_task)
@@ -464,6 +466,20 @@ class Stack(object):
                                         reverse=True)
         sus_task(timeout=self.timeout_secs())
 
+    def resume(self):
+        '''
+        Resume the stack, which invokes handle_resume for all stack resources
+        waits for all resources to become RESUME_COMPLETE then declares the
+        stack RESUME_COMPLETE.
+        Note the default implementation for all resources is to do nothing
+        other than move to RESUME_COMPLETE, so the resources must implement
+        handle_resume for this to have any effect.
+        '''
+        sus_task = scheduler.TaskRunner(self.stack_task,
+                                        action=self.RESUME,
+                                        reverse=False)
+        sus_task(timeout=self.timeout_secs())
+
     def output(self, key):
         '''
         Get the value of the specified stack output.
@@ -530,6 +546,8 @@ def resolve_static_data(template, stack, parameters, snippet):
                      [functools.partial(template.resolve_param_refs,
                                         parameters=parameters),
                       functools.partial(template.resolve_availability_zones,
+                                        stack=stack),
+                      functools.partial(template.resolve_resource_facade,
                                         stack=stack),
                       template.resolve_find_in_map,
                       template.reduce_joins])

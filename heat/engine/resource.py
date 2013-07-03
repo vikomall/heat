@@ -28,6 +28,7 @@ from heat.engine.attributes import Attributes
 from heat.engine.properties import Properties
 
 from heat.openstack.common import log as logging
+from heat.openstack.common.gettextutils import _
 
 logger = logging.getLogger(__name__)
 
@@ -113,8 +114,9 @@ class Metadata(object):
 
 
 class Resource(object):
-    ACTIONS = (CREATE, DELETE, UPDATE, ROLLBACK, SUSPEND
-               ) = ('CREATE', 'DELETE', 'UPDATE', 'ROLLBACK', 'SUSPEND')
+    ACTIONS = (CREATE, DELETE, UPDATE, ROLLBACK, SUSPEND, RESUME
+               ) = ('CREATE', 'DELETE', 'UPDATE', 'ROLLBACK',
+                    'SUSPEND', 'RESUME')
 
     STATUSES = (IN_PROGRESS, FAILED, COMPLETE
                 ) = ('IN_PROGRESS', 'FAILED', 'COMPLETE')
@@ -161,7 +163,6 @@ class Resource(object):
         self.name = name
         self.json_snippet = json_snippet
         self.t = stack.resolve_static_data(json_snippet)
-        self.cached_t = None
         self.properties = Properties(self.properties_schema,
                                      self.t.get('Properties', {}),
                                      self.stack.resolve_runtime_data,
@@ -209,28 +210,17 @@ class Resource(object):
         return identifier.ResourceIdentifier(resource_name=self.name,
                                              **self.stack.identifier())
 
-    def parsed_template(self, section=None, default={}, cached=False):
+    def parsed_template(self, section=None, default={}):
         '''
         Return the parsed template data for the resource. May be limited to
         only one section of the data, in which case a default value may also
         be supplied.
         '''
-        if cached and self.cached_t:
-            t = self.cached_t
-        else:
-            t = self.t
         if section is None:
-            template = t
+            template = self.t
         else:
-            template = t.get(section, default)
+            template = self.t.get(section, default)
         return self.stack.resolve_runtime_data(template)
-
-    def cache_template(self):
-        '''
-        make a cache of the resource's parsed template
-        this can then be used via parsed_template(cached=True)
-        '''
-        self.cached_t = self.stack.resolve_runtime_data(self.t)
 
     def update_template_diff(self, after, before):
         '''
@@ -311,6 +301,14 @@ class Resource(object):
     def add_dependencies(self, deps):
         self._add_dependencies(deps, None, self.t)
         deps += (self, None)
+
+    def required_by(self):
+        '''
+        Returns a list of names of resources which directly require this
+        resource as a dependency.
+        '''
+        return list(
+            [r.name for r in self.stack.dependencies.required_by(self)])
 
     def keystone(self):
         return self.stack.clients.keystone()
@@ -396,12 +394,13 @@ class Resource(object):
                                      self.name)
         return self._do_action(self.CREATE, self.properties.validate)
 
-    def update(self, json_snippet=None):
+    def update(self, after, before=None):
         '''
         update the resource. Subclasses should provide a handle_update() method
         to customise update, the base-class handle_update will fail by default.
         '''
-        assert json_snippet is not None, 'Must specify update json snippet'
+        if before is None:
+            before = self.parsed_template()
 
         if (self.action, self.status) in ((self.CREATE, self.IN_PROGRESS),
                                          (self.UPDATE, self.IN_PROGRESS)):
@@ -413,17 +412,14 @@ class Resource(object):
         try:
             self.state_set(self.UPDATE, self.IN_PROGRESS)
             properties = Properties(self.properties_schema,
-                                    json_snippet.get('Properties', {}),
+                                    after.get('Properties', {}),
                                     self.stack.resolve_runtime_data,
                                     self.name)
             properties.validate()
-            old_json_snippet = self.parsed_template(cached=True)
-            tmpl_diff = self.update_template_diff(json_snippet,
-                                                  old_json_snippet)
-            prop_diff = self.update_template_diff_properties(json_snippet,
-                                                             old_json_snippet)
+            tmpl_diff = self.update_template_diff(after, before)
+            prop_diff = self.update_template_diff_properties(after, before)
             if callable(getattr(self, 'handle_update', None)):
-                result = self.handle_update(json_snippet, tmpl_diff, prop_diff)
+                result = self.handle_update(after, tmpl_diff, prop_diff)
         except UpdateReplace:
             logger.debug("Resource %s update requires replacement" % self.name)
             raise
@@ -433,15 +429,13 @@ class Resource(object):
             self.state_set(self.UPDATE, self.FAILED, str(failure))
             raise failure
         else:
-            self.t = self.stack.resolve_static_data(json_snippet)
+            self.t = self.stack.resolve_static_data(after)
             self.state_set(self.UPDATE, self.COMPLETE)
 
     def suspend(self):
         '''
         Suspend the resource.  Subclasses should provide a handle_suspend()
-        method to implement suspend, the base-class handle_update does nothing
-        Note this uses the same coroutine logic as create() since suspending
-        instances is a non-immediate operation and we want to paralellize
+        method to implement suspend
         '''
         # Don't try to suspend the resource unless it's in a stable state
         if (self.action == self.DELETE or self.status != self.COMPLETE):
@@ -451,6 +445,20 @@ class Resource(object):
 
         logger.info('suspending %s' % str(self))
         return self._do_action(self.SUSPEND)
+
+    def resume(self):
+        '''
+        Resume the resource.  Subclasses should provide a handle_resume()
+        method to implement resume
+        '''
+        # Can't resume a resource unless it's SUSPEND_COMPLETE
+        if self.state != (self.SUSPEND, self.COMPLETE):
+            exc = exception.Error('State %s invalid for resume'
+                                  % str(self.state))
+            raise exception.ResourceFailure(exc)
+
+        logger.info('resuming %s' % str(self))
+        return self._do_action(self.RESUME)
 
     def physical_resource_name(self):
         if self.id is None:

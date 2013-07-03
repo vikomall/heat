@@ -18,6 +18,7 @@ import time
 import uuid
 
 from heat.common import context
+from heat.engine import environment
 from heat.common import exception
 from heat.common import template_format
 from heat.engine import clients
@@ -457,6 +458,54 @@ Mappings:
             parser.Template.resolve_replace(snippet),
             '"foo" is "${var3}"')
 
+    def test_resource_facade(self):
+        metadata_snippet = {'Fn::ResourceFacade': 'Metadata'}
+        deletion_policy_snippet = {'Fn::ResourceFacade': 'DeletionPolicy'}
+        update_policy_snippet = {'Fn::ResourceFacade': 'UpdatePolicy'}
+
+        class DummyClass:
+            pass
+        parent_resource = DummyClass()
+        parent_resource.metadata = '{"foo": "bar"}'
+        parent_resource.t = {'DeletionPolicy': 'Retain',
+                             'UpdatePolicy': '{"foo": "bar"}'}
+        stack = parser.Stack(None, 'test_stack',
+                             parser.Template({}),
+                             parent_resource=parent_resource)
+        self.assertEqual(
+            parser.Template.resolve_resource_facade(metadata_snippet, stack),
+            '{"foo": "bar"}')
+        self.assertEqual(
+            parser.Template.resolve_resource_facade(deletion_policy_snippet,
+                                                    stack), 'Retain')
+        self.assertEqual(
+            parser.Template.resolve_resource_facade(update_policy_snippet,
+                                                    stack), '{"foo": "bar"}')
+
+    def test_resource_facade_invalid_arg(self):
+        snippet = {'Fn::ResourceFacade': 'wibble'}
+        stack = parser.Stack(None, 'test_stack', parser.Template({}))
+        self.assertRaises(ValueError,
+                          parser.Template.resolve_resource_facade,
+                          snippet,
+                          stack)
+
+    def test_resource_facade_missing_key(self):
+        snippet = {'Fn::ResourceFacade': 'DeletionPolicy'}
+
+        class DummyClass:
+            pass
+        parent_resource = DummyClass()
+        parent_resource.metadata = '{"foo": "bar"}'
+        parent_resource.t = {}
+        stack = parser.Stack(None, 'test_stack',
+                             parser.Template({}),
+                             parent_resource=parent_resource)
+        self.assertRaises(KeyError,
+                          parser.Template.resolve_resource_facade,
+                          snippet,
+                          stack)
+
 
 class StackTest(HeatTestCase):
     def setUp(self):
@@ -516,6 +565,33 @@ class StackTest(HeatTestCase):
     def test_load_nonexistant_id(self):
         self.assertRaises(exception.NotFound, parser.Stack.load,
                           None, -1)
+
+    @stack_delete_after
+    def test_load_parent_resource(self):
+        self.stack = parser.Stack(self.ctx, 'load_parent_resource',
+                                  parser.Template({}))
+        self.stack.store()
+        stack = db_api.stack_get(self.ctx, self.stack.id)
+
+        t = template.Template.load(self.ctx, stack.raw_template_id)
+        self.m.StubOutWithMock(template.Template, 'load')
+        template.Template.load(self.ctx, stack.raw_template_id).AndReturn(t)
+
+        env = environment.Environment(stack.parameters)
+        self.m.StubOutWithMock(environment, 'Environment')
+        environment.Environment(stack.parameters).AndReturn(env)
+
+        self.m.StubOutWithMock(parser.Stack, '__init__')
+        parser.Stack.__init__(self.ctx, stack.name, t, env, stack.id,
+                              stack.action, stack.status, stack.status_reason,
+                              stack.timeout, True, stack.disable_rollback,
+                              'parent')
+
+        self.m.ReplayAll()
+        parser.Stack.load(self.ctx, stack_id=self.stack.id,
+                          parent_resource='parent')
+
+        self.m.VerifyAll()
 
     # Note tests creating a stack should be decorated with @stack_delete_after
     # to ensure the self.stack is properly cleaned up
@@ -597,7 +673,7 @@ class StackTest(HeatTestCase):
                          (parser.Stack.DELETE, parser.Stack.COMPLETE))
 
     @stack_delete_after
-    def test_suspend(self):
+    def test_suspend_resume(self):
         self.m.ReplayAll()
         tmpl = {'Resources': {'AResource': {'Type': 'GenericResourceType'}}}
         self.stack = parser.Stack(self.ctx, 'suspend_test',
@@ -611,6 +687,12 @@ class StackTest(HeatTestCase):
 
         self.assertEqual(self.stack.state,
                          (self.stack.SUSPEND, self.stack.COMPLETE))
+
+        self.stack.resume()
+
+        self.assertEqual(self.stack.state,
+                         (self.stack.RESUME, self.stack.COMPLETE))
+
         self.m.VerifyAll()
 
     @stack_delete_after
@@ -638,6 +720,35 @@ class StackTest(HeatTestCase):
         self.m.VerifyAll()
 
     @stack_delete_after
+    def test_resume_fail(self):
+        tmpl = {'Resources': {'AResource': {'Type': 'GenericResourceType'}}}
+        self.m.StubOutWithMock(generic_rsrc.GenericResource, 'handle_resume')
+        exc = exception.ResourceFailure(Exception('foo'))
+        generic_rsrc.GenericResource.handle_resume().AndRaise(exc)
+        self.m.ReplayAll()
+
+        self.stack = parser.Stack(self.ctx, 'resume_test_fail',
+                                  parser.Template(tmpl))
+
+        stack_id = self.stack.store()
+        self.stack.create()
+        self.assertEqual(self.stack.state,
+                         (self.stack.CREATE, self.stack.COMPLETE))
+
+        self.stack.suspend()
+
+        self.assertEqual(self.stack.state,
+                         (self.stack.SUSPEND, self.stack.COMPLETE))
+
+        self.stack.resume()
+
+        self.assertEqual(self.stack.state,
+                         (self.stack.RESUME, self.stack.FAILED))
+        self.assertEqual(self.stack.status_reason,
+                         'Resource resume failed: Exception: foo')
+        self.m.VerifyAll()
+
+    @stack_delete_after
     def test_suspend_timeout(self):
         tmpl = {'Resources': {'AResource': {'Type': 'GenericResourceType'}}}
         self.m.StubOutWithMock(generic_rsrc.GenericResource, 'handle_suspend')
@@ -658,6 +769,35 @@ class StackTest(HeatTestCase):
         self.assertEqual(self.stack.state,
                          (self.stack.SUSPEND, self.stack.FAILED))
         self.assertEqual(self.stack.status_reason, 'Suspend timed out')
+        self.m.VerifyAll()
+
+    @stack_delete_after
+    def test_resume_timeout(self):
+        tmpl = {'Resources': {'AResource': {'Type': 'GenericResourceType'}}}
+        self.m.StubOutWithMock(generic_rsrc.GenericResource, 'handle_resume')
+        exc = scheduler.Timeout('foo', 0)
+        generic_rsrc.GenericResource.handle_resume().AndRaise(exc)
+        self.m.ReplayAll()
+
+        self.stack = parser.Stack(self.ctx, 'resume_test_fail_timeout',
+                                  parser.Template(tmpl))
+
+        stack_id = self.stack.store()
+        self.stack.create()
+        self.assertEqual(self.stack.state,
+                         (self.stack.CREATE, self.stack.COMPLETE))
+
+        self.stack.suspend()
+
+        self.assertEqual(self.stack.state,
+                         (self.stack.SUSPEND, self.stack.COMPLETE))
+
+        self.stack.resume()
+
+        self.assertEqual(self.stack.state,
+                         (self.stack.RESUME, self.stack.FAILED))
+
+        self.assertEqual(self.stack.status_reason, 'Resume timed out')
         self.m.VerifyAll()
 
     @stack_delete_after
@@ -1479,3 +1619,33 @@ class StackTest(HeatTestCase):
                 (rsrc.UPDATE, rsrc.FAILED)):
             rsrc.state_set(action, status)
             self.assertEqual(None, self.stack.output('TestOutput'))
+
+    @stack_delete_after
+    def test_resource_required_by(self):
+        tmpl = {'Resources': {'AResource': {'Type': 'GenericResourceType'},
+                              'BResource': {'Type': 'GenericResourceType',
+                                            'DependsOn': 'AResource'},
+                              'CResource': {'Type': 'GenericResourceType',
+                                            'DependsOn': 'BResource'},
+                              'DResource': {'Type': 'GenericResourceType',
+                                            'DependsOn': 'BResource'}}}
+
+        self.m.StubOutWithMock(scheduler.TaskRunner, '_sleep')
+        scheduler.TaskRunner._sleep(mox.IsA(int)).MultipleTimes()
+        mox.Replay(scheduler.TaskRunner._sleep)
+
+        self.stack = parser.Stack(self.ctx, 'depends_test_stack',
+                                  template.Template(tmpl))
+        self.stack.store()
+        self.stack.create()
+        self.assertEqual(self.stack.state,
+                         (parser.Stack.CREATE, parser.Stack.COMPLETE))
+
+        self.assertEqual(['BResource'],
+                         self.stack['AResource'].required_by())
+        self.assertEqual([],
+                         self.stack['CResource'].required_by())
+        required_by = self.stack['BResource'].required_by()
+        self.assertEqual(2, len(required_by))
+        for r in ['CResource', 'DResource']:
+            self.assertIn(r, required_by)
