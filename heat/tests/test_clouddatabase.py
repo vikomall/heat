@@ -13,7 +13,6 @@
 #    under the License.
 
 
-from heat.common import exception
 from heat.common import template_format
 from heat.engine import parser
 from heat.engine import environment
@@ -138,13 +137,6 @@ class CloudDBInstanceTest(HeatTestCase):
         self.assertEqual(instance._resolve_attribute('hostname'),
                          expected_hostname)
         self.assertEqual(instance._resolve_attribute('href'), expected_href)
-        self.m.VerifyAll()
-
-    def test_clouddbinstance_delete_resource_notfound(self):
-        instance = self._setup_test_clouddbinstance('dbinstance_delete')
-        instance.resource_id = None
-        self.m.ReplayAll()
-        self.assertRaises(exception.ResourceNotFound, instance.handle_delete)
         self.m.VerifyAll()
 
     def test_clouddbinstance_delete(self):

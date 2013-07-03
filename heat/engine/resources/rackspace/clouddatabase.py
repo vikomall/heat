@@ -176,10 +176,13 @@ class CloudDBInstance(rackspace_resource.RackspaceResource):
         logger.debug("CloudDBInstance handle_delete called.")
         sqlinstancename = self.properties['InstanceName']
         if self.resource_id is None:
-            logger.debug("resource_id is null and returning without delete.")
-            raise exception.ResourceNotFound(resource_name=sqlinstancename,
-                                             stack_name=self.stack.name)
-        instances = self.cloud_db().delete(self.resource_id)
+            return
+
+        try:
+            instances = self.cloud_db().delete(self.resource_id)
+        except exception.NotFound:
+            pass
+
         self.resource_id = None
 
     def validate(self):
