@@ -324,6 +324,9 @@ class Resource(object):
 
     def cinder(self):
         return self.stack.clients.cinder()
+    
+    def trove(self):
+        return self.stack.clients.trove()
 
     def _do_action(self, action, pre_func=None):
         '''

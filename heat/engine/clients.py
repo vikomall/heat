@@ -28,17 +28,24 @@ try:
 except ImportError:
     swiftclient = None
     logger.info('swiftclient not available')
+
 try:
     from quantumclient.v2_0 import client as quantumclient
 except ImportError:
     quantumclient = None
     logger.info('quantumclient not available')
+
 try:
     from cinderclient import client as cinderclient
 except ImportError:
     cinderclient = None
     logger.info('cinderclient not available')
 
+try:
+    from troveclient import client as troveclient
+except ImportError:
+    troveclient = None
+    logger.info('troveclient not available')
 
 cloud_opts = [
     cfg.StrOpt('cloud_backend',
@@ -60,6 +67,7 @@ class OpenStackClients(object):
         self._swift = None
         self._quantum = None
         self._cinder = None
+        self._trove = None
 
     def keystone(self):
         if self._keystone:
@@ -192,6 +200,42 @@ class OpenStackClients(object):
             self._cinder.client.management_url = management_url
 
         return self._cinder
+
+    def trove(self):
+        if troveclient is None:
+            return None
+        if self._trove:
+            return self._trove
+
+        import pdb
+        pdb.set_trace()
+        con = self.context
+        args = {
+            'service_type': 'rax:database', #con.service_type, # 'rax.database',
+            'auth_url': '%stokens' % con.auth_url,
+            'tenant': con.tenant_id,
+            'region_name': 'DFW'
+        }
+
+        if con.password is not None:
+            args['username'] = con.username
+            args['api_key'] = con.password
+        elif con.api_key is not None:
+            args['username'] = con.username
+            args['api_key'] = con.api_key
+        else:
+            logger.error("trove connection failed, "
+                         "no password or api_key!")
+            return None
+        logger.debug('trove args %s', args)
+
+        self._trove = troveclient.Dbaas(**args)
+        if con.password is None and con.api_key is None and con.auth_token is not None:
+            management_url = self.url_for(service_type='rax:database')
+            self._trove.client.auth_token = con.auth_token
+            self._trove.client.management_url = management_url
+
+        return self._trove
 
 if cfg.CONF.cloud_backend:
     cloud_backend_module = importutils.import_module(cfg.CONF.cloud_backend)
