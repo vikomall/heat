@@ -201,7 +201,7 @@ class OpenStackClients(object):
 
         return self._cinder
 
-    def trove(self):
+    def trove(self, service_type="rax:database", region_name="DFW"):
         if troveclient is None:
             return None
         if self._trove:
@@ -211,10 +211,10 @@ class OpenStackClients(object):
         pdb.set_trace()
         con = self.context
         args = {
-            'service_type': 'rax:database', #con.service_type, # 'rax.database',
+            'service_type': service_type, #'rax:database', #con.service_type,
             'auth_url': '%stokens' % con.auth_url,
             'tenant': con.tenant_id,
-            'region_name': 'DFW'
+            'region_name': region_name #'DFW'
         }
 
         if con.password is not None:

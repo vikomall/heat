@@ -89,6 +89,16 @@ class CloudDBInstance(resource.Resource):
             "Required": True
         },
 
+        "ServiceType": {
+            "Type": "String",
+            "Required": True
+        },
+
+        "Region": {
+            "Type": "String",
+            "Required": True
+        },
+
         "Databases": {
             'Type': 'List',
             'Required': False,
@@ -128,16 +138,17 @@ class CloudDBInstance(resource.Resource):
         self.volume = {'size':self.properties['VolumeSize']}
         self.databases = self.properties.get('Databases', [])
         self.users = self.properties.get('Users', [])
+        self.region = self.properties.get("Region", None)
+        self.service_type = self.properties.get("ServiceType", None)
 
         # create db instance
         logger.info("Creating Cloud DB instance %s" % self.sqlinstancename)
-        import pdb
-        pdb.set_trace()
-        instance = self.trove().instances.create(self.sqlinstancename,
-                                       self.flavor,
-                                       self.volume,
-                                       self.databases,
-                                       self.users)
+        instance = self.trove(self.service_type, self.region).instances.create(
+            self.sqlinstancename,
+            self.flavor,
+            self.volume,
+            self.databases,
+            self.users)
         if instance is not None:
             self.resource_id_set(instance.id)
 
@@ -198,8 +209,6 @@ class CloudDBInstance(resource.Resource):
                 return {'Error':
                         'Must provide access to at least one database for '
                         'user %s' % user['name']}
-            import pdb
-            pdb.set_trace()
             missing_db = [db_name['name'] for db_name in user['databases']
                           if db_name['name'] not in
                           [db['name'] for db in databases]]
