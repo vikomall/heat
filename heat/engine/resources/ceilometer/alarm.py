@@ -13,7 +13,9 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from heat.common import exception
 from heat.engine import resource
+from heat.engine import watchrule
 
 
 class CeilometerAlarm(resource.Resource):
@@ -46,6 +48,8 @@ class CeilometerAlarm(resource.Resource):
                          'insufficient_data_actions': {'Type': 'List'},
                          'description': {'Type': 'String'},
                          'source': {'Type': 'String'},
+                         'enabled': {'Type': 'Boolean',
+                                     'Default': 'true'},
                          'matching_metadata': {'Type': 'Map'}}
 
     update_allowed_keys = ('Properties',)
@@ -55,7 +59,8 @@ class CeilometerAlarm(resource.Resource):
     update_allowed_properties = ('comparison_operator', 'description',
                                  'evaluation_periods', 'period', 'statistic',
                                  'alarm_actions', 'ok_actions',
-                                 'insufficient_data_actions', 'threshold')
+                                 'insufficient_data_actions', 'threshold',
+                                 'enabled')
 
     def _actions_to_urls(self, props):
         kwargs = {}
@@ -80,10 +85,20 @@ class CeilometerAlarm(resource.Resource):
     def handle_create(self):
         props = self._actions_to_urls(self.parsed_template('Properties'))
         props['name'] = self.physical_resource_name()
-        props['enabled'] = True
 
         alarm = self.ceilometer().alarms.create(**props)
         self.resource_id_set(alarm.alarm_id)
+
+        # the watchrule below is for backwards compatibility.
+        # 1) so we don't create watch tasks unneccessarly
+        # 2) to support CW stats post, we will redirect the request
+        #    to ceilometer.
+        wr = watchrule.WatchRule(context=self.context,
+                                 watch_name=self.physical_resource_name(),
+                                 rule=self.parsed_template('Properties'),
+                                 stack_id=self.stack.id)
+        wr.state = wr.CEILOMETER_CONTROLLED
+        wr.store()
 
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
         if prop_diff:
@@ -102,6 +117,13 @@ class CeilometerAlarm(resource.Resource):
                                             enabled=True)
 
     def handle_delete(self):
+        try:
+            wr = watchrule.WatchRule.load(
+                self.context, watch_name=self.physical_resource_name())
+            wr.destroy()
+        except exception.WatchRuleNotFound:
+            pass
+
         if self.resource_id is not None:
             self.ceilometer().alarms.delete(self.resource_id)
 

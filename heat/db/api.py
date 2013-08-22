@@ -62,10 +62,6 @@ def raw_template_get(context, template_id):
     return IMPL.raw_template_get(context, template_id)
 
 
-def raw_template_get_all(context):
-    return IMPL.raw_template_get_all(context)
-
-
 def raw_template_create(context, values):
     return IMPL.raw_template_create(context, values)
 
@@ -80,6 +76,11 @@ def resource_data_set(resource, key, value, redact=False):
 
 def resource_data_get_by_key(context, resource_id, key):
     return IMPL.resource_data_get_by_key(context, resource_id, key)
+
+
+def resource_data_delete(resource, key):
+    """Remove a resource_data element associated to a resource."""
+    return IMPL.resource_data_delete(resource, key)
 
 
 def resource_get(context, resource_id):
@@ -108,8 +109,8 @@ def resource_get_by_physical_resource_id(context, physical_resource_id):
                                                      physical_resource_id)
 
 
-def stack_get(context, stack_id, admin=False):
-    return IMPL.stack_get(context, stack_id, admin)
+def stack_get(context, stack_id, admin=False, show_deleted=False):
+    return IMPL.stack_get(context, stack_id, admin, show_deleted=show_deleted)
 
 
 def stack_get_by_name(context, stack_name):

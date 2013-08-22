@@ -23,6 +23,7 @@ Cinder's faultwrapper
 import traceback
 import webob
 
+from heat.common import exception
 from heat.openstack.common import log as logging
 import heat.openstack.common.rpc.common as rpc_common
 
@@ -74,20 +75,38 @@ class FaultWrapper(wsgi.Middleware):
 
     def _error(self, ex):
 
+        trace = None
+        webob_exc = None
+        if isinstance(ex, exception.HTTPExceptionDisguise):
+            # An HTTP exception was disguised so it could make it here
+            # let's remove the disguise and set the original HTTP exception
+            trace = ''.join(traceback.format_tb(ex.tb))
+            ex = ex.exc
+            webob_exc = ex
+
         ex_type = ex.__class__.__name__
 
         if ex_type.endswith(rpc_common._REMOTE_POSTFIX):
             ex_type = ex_type[:-len(rpc_common._REMOTE_POSTFIX)]
 
-        message = str(ex)
-        if message.find('\n') > -1:
-            message, trace = message.split('\n', 1)
+        if isinstance(ex, exception.OpenstackException):
+            # If the exception is an OpenstackException it is going to have a
+            # translated Message object as the message, let's recreate it here
+            message = (ex.message % ex.kwargs
+                       if hasattr(ex, 'kwargs') else ex.message)
         else:
-            message = str(ex)
-            trace = traceback.format_exc()
+            message = ex.message
 
-        webob_exc = self.error_map.get(ex_type,
-                                       webob.exc.HTTPInternalServerError)
+        if not trace:
+            trace = str(ex)
+            if trace.find('\n') > -1:
+                unused, trace = trace.split('\n', 1)
+            else:
+                trace = traceback.format_exc()
+
+        if not webob_exc:
+            webob_exc = self.error_map.get(ex_type,
+                                           webob.exc.HTTPInternalServerError)
 
         error = {
             'code': webob_exc.code,

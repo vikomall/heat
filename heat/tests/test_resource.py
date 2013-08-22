@@ -13,7 +13,6 @@
 #    under the License.
 
 import itertools
-from eventlet.support import greenlets as greenlet
 
 from heat.common import exception
 from heat.engine import parser
@@ -24,15 +23,14 @@ import heat.db.api as db_api
 
 from heat.tests import generic_resource as generic_rsrc
 from heat.tests.common import HeatTestCase
-from heat.tests.utils import dummy_context
-from heat.tests.utils import setup_dummy_db
+from heat.tests import utils
 
 
 class ResourceTest(HeatTestCase):
     def setUp(self):
         super(ResourceTest, self).setUp()
-        setup_dummy_db()
-        self.stack = parser.Stack(dummy_context(), 'test_stack',
+        utils.setup_dummy_db()
+        self.stack = parser.Stack(utils.dummy_context(), 'test_stack',
                                   parser.Template({}),
                                   stack_id=uuidutils.generate_uuid())
 
@@ -158,7 +156,7 @@ class ResourceTest(HeatTestCase):
         tmpl1 = {'Type': 'Foo'}
         tmpl2 = {'Type': 'Foo'}
         tmpl3 = {'Type': 'Bar'}
-        stack2 = parser.Stack(dummy_context(), 'test_stack',
+        stack2 = parser.Stack(utils.dummy_context(), 'test_stack',
                               parser.Template({}), stack_id=-1)
         res1 = generic_rsrc.GenericResource('test_resource', tmpl1, self.stack)
         res2 = generic_rsrc.GenericResource('test_resource', tmpl2, stack2)
@@ -281,6 +279,16 @@ class ResourceTest(HeatTestCase):
         self.assertRaises(exception.ResourceFailure, create)
         self.assertEqual((res.CREATE, res.FAILED), res.state)
 
+    def test_create_fail_metadata_parse_error(self):
+        tmpl = {'Type': 'GenericResourceType', 'Properties': {},
+                'Metadata': {"Fn::GetAtt": ["ResourceA", "abc"]}}
+        rname = 'test_resource'
+        res = generic_rsrc.ResourceWithProps(rname, tmpl, self.stack)
+
+        create = scheduler.TaskRunner(res.create)
+        self.assertRaises(exception.ResourceFailure, create)
+        self.assertEqual((res.CREATE, res.FAILED), res.state)
+
     def test_create_resource_after_destroy(self):
         tmpl = {'Type': 'GenericResourceType'}
         rname = 'test_res_id_none'
@@ -304,8 +312,8 @@ class ResourceTest(HeatTestCase):
         utmpl = {'Type': 'GenericResourceType', 'Properties': {'Foo': 'xyz'}}
         tmpl_diff = {'Properties': {'Foo': 'xyz'}}
         prop_diff = {'Foo': 'xyz'}
-        self.m.StubOutWithMock(generic_rsrc.GenericResource, 'handle_update')
-        generic_rsrc.GenericResource.handle_update(
+        self.m.StubOutWithMock(generic_rsrc.ResourceWithProps, 'handle_update')
+        generic_rsrc.ResourceWithProps.handle_update(
             utmpl, tmpl_diff, prop_diff).AndReturn(None)
         self.m.ReplayAll()
 
@@ -322,10 +330,10 @@ class ResourceTest(HeatTestCase):
         self.assertEqual((res.CREATE, res.COMPLETE), res.state)
 
         utmpl = {'Type': 'GenericResourceType', 'Properties': {'Foo': 'xyz'}}
-        self.m.StubOutWithMock(generic_rsrc.GenericResource, 'handle_update')
+        self.m.StubOutWithMock(generic_rsrc.ResourceWithProps, 'handle_update')
         tmpl_diff = {'Properties': {'Foo': 'xyz'}}
         prop_diff = {'Foo': 'xyz'}
-        generic_rsrc.GenericResource.handle_update(
+        generic_rsrc.ResourceWithProps.handle_update(
             utmpl, tmpl_diff, prop_diff).AndRaise(resource.UpdateReplace())
         self.m.ReplayAll()
         # should be re-raised so parser.Stack can handle replacement
@@ -370,9 +378,9 @@ class ResourceTest(HeatTestCase):
         utmpl = {'Type': 'GenericResourceType', 'Properties': {'Foo': 'xyz'}}
         tmpl_diff = {'Properties': {'Foo': 'xyz'}}
         prop_diff = {'Foo': 'xyz'}
-        self.m.StubOutWithMock(generic_rsrc.GenericResource, 'handle_update')
-        generic_rsrc.GenericResource.handle_update(utmpl, tmpl_diff, prop_diff
-                                                   ).AndRaise(NotImplemented)
+        self.m.StubOutWithMock(generic_rsrc.ResourceWithProps, 'handle_update')
+        generic_rsrc.ResourceWithProps.handle_update(
+            utmpl, tmpl_diff, prop_diff).AndRaise(NotImplemented)
         self.m.ReplayAll()
         self.assertRaises(exception.ResourceFailure, res.update, utmpl)
         self.assertEqual((res.UPDATE, res.FAILED), res.state)
@@ -422,46 +430,15 @@ class ResourceTest(HeatTestCase):
             resume = scheduler.TaskRunner(res.resume)
             self.assertRaises(exception.ResourceFailure, resume)
 
-    def test_suspend_fail_exit(self):
-        tmpl = {'Type': 'GenericResourceType', 'Properties': {'Foo': 'abc'}}
-        res = generic_rsrc.ResourceWithProps('test_resource', tmpl, self.stack)
-        scheduler.TaskRunner(res.create)()
-        self.assertEqual((res.CREATE, res.COMPLETE), res.state)
-
-        self.m.StubOutWithMock(generic_rsrc.GenericResource, 'handle_suspend')
-        generic_rsrc.GenericResource.handle_suspend().AndRaise(
-            greenlet.GreenletExit())
-        self.m.ReplayAll()
-
-        suspend = scheduler.TaskRunner(res.suspend)
-        self.assertRaises(greenlet.GreenletExit, suspend)
-        self.assertEqual((res.SUSPEND, res.FAILED), res.state)
-
-    def test_resume_fail_exit(self):
-        tmpl = {'Type': 'GenericResourceType', 'Properties': {'Foo': 'abc'}}
-        res = generic_rsrc.ResourceWithProps('test_resource', tmpl, self.stack)
-        scheduler.TaskRunner(res.create)()
-        self.assertEqual((res.CREATE, res.COMPLETE), res.state)
-
-        self.m.StubOutWithMock(generic_rsrc.GenericResource, 'handle_resume')
-        generic_rsrc.GenericResource.handle_resume().AndRaise(
-            greenlet.GreenletExit())
-        self.m.ReplayAll()
-
-        res.state_set(res.SUSPEND, res.COMPLETE)
-
-        resume = scheduler.TaskRunner(res.resume)
-        self.assertRaises(greenlet.GreenletExit, resume)
-        self.assertEqual((res.RESUME, res.FAILED), res.state)
-
     def test_suspend_fail_exception(self):
         tmpl = {'Type': 'GenericResourceType', 'Properties': {'Foo': 'abc'}}
         res = generic_rsrc.ResourceWithProps('test_resource', tmpl, self.stack)
         scheduler.TaskRunner(res.create)()
         self.assertEqual((res.CREATE, res.COMPLETE), res.state)
 
-        self.m.StubOutWithMock(generic_rsrc.GenericResource, 'handle_suspend')
-        generic_rsrc.GenericResource.handle_suspend().AndRaise(Exception())
+        self.m.StubOutWithMock(generic_rsrc.ResourceWithProps,
+                               'handle_suspend')
+        generic_rsrc.ResourceWithProps.handle_suspend().AndRaise(Exception())
         self.m.ReplayAll()
 
         suspend = scheduler.TaskRunner(res.suspend)
@@ -474,8 +451,8 @@ class ResourceTest(HeatTestCase):
         scheduler.TaskRunner(res.create)()
         self.assertEqual((res.CREATE, res.COMPLETE), res.state)
 
-        self.m.StubOutWithMock(generic_rsrc.GenericResource, 'handle_resume')
-        generic_rsrc.GenericResource.handle_resume().AndRaise(Exception())
+        self.m.StubOutWithMock(generic_rsrc.ResourceWithProps, 'handle_resume')
+        generic_rsrc.ResourceWithProps.handle_resume().AndRaise(Exception())
         self.m.ReplayAll()
 
         res.state_set(res.SUSPEND, res.COMPLETE)
@@ -570,8 +547,8 @@ class MetadataTest(HeatTestCase):
             'Type': 'Foo',
             'Metadata': {'Test': 'Initial metadata'}
         }
-        setup_dummy_db()
-        self.stack = parser.Stack(dummy_context(),
+        utils.setup_dummy_db()
+        self.stack = parser.Stack(utils.dummy_context(),
                                   'test_stack', parser.Template({}))
         self.stack.store()
         self.res = generic_rsrc.GenericResource('metadata_resource',

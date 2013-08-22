@@ -33,9 +33,10 @@ DEFAULT_PORT = 8000
 
 paste_deploy_group = cfg.OptGroup('paste_deploy')
 paste_deploy_opts = [
-    cfg.StrOpt('flavor'),
+    cfg.StrOpt('flavor',
+               help=_("The flavor to use")),
     cfg.StrOpt('api_paste_config', default="api-paste.ini",
-               help="The API paste config file to use")]
+               help=_("The API paste config file to use"))]
 
 
 service_opts = [
@@ -100,7 +101,10 @@ engine_opts = [
                help='Driver to use for controlling instances'),
     cfg.ListOpt('plugin_dirs',
                 default=['/usr/lib64/heat', '/usr/lib/heat'],
-                help='List of directories to search for Plugins')]
+                help='List of directories to search for Plugins'),
+    cfg.StrOpt('environment_dir',
+               default='/etc/heat/environment.d',
+               help='The directory to search for environment files')]
 
 rpc_opts = [
     cfg.StrOpt('host',
@@ -109,20 +113,24 @@ rpc_opts = [
                     'This can be an opaque identifier.'
                     'It is not necessarily a hostname, FQDN, or IP address.')]
 
+auth_password_group = cfg.OptGroup('auth_password')
+auth_password_opts = [
+    cfg.BoolOpt('multi_cloud',
+                default=False,
+                help=_('Allow orchestration of multiple clouds')),
+    cfg.ListOpt('allowed_auth_uris',
+                default=[],
+                help=_('Allowed targets for auth_uri when multi_cloud is '
+                       'enabled.  If empty, all targets will be allowed.'))]
+
 cfg.CONF.register_opts(db_opts)
 cfg.CONF.register_opts(engine_opts)
 cfg.CONF.register_opts(service_opts)
 cfg.CONF.register_opts(rpc_opts)
 cfg.CONF.register_group(paste_deploy_group)
 cfg.CONF.register_opts(paste_deploy_opts, group=paste_deploy_group)
-
-# TODO(jianingy): I'll set allowed_rpc_exception_modules here for now.
-#                 after figure out why rpc_set_default was not called,
-#                 I'll move these settings into rpc_set_default()
-allowed_rpc_exception_modules = cfg.CONF.allowed_rpc_exception_modules
-allowed_rpc_exception_modules.append('heat.common.exception')
-cfg.CONF.set_default(name='allowed_rpc_exception_modules',
-                     default=allowed_rpc_exception_modules)
+cfg.CONF.register_group(auth_password_group)
+cfg.CONF.register_opts(auth_password_opts, group=auth_password_group)
 
 
 def rpc_set_default():
@@ -186,4 +194,6 @@ def load_paste_app(app_name=None):
     except (LookupError, ImportError) as e:
         raise RuntimeError("Unable to load %(app_name)s from "
                            "configuration file %(conf_file)s."
-                           "\nGot: %(e)r" % locals())
+                           "\nGot: %(e)r" % {'app_name': app_name,
+                                             'conf_file': conf_file,
+                                             'e': e})

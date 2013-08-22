@@ -16,15 +16,13 @@ import mox
 from heat.engine import environment
 from heat.tests.v1_1 import fakes
 from heat.engine.resources import instance as instances
-from heat.engine.resources import autoscaling
+from heat.engine.resources import nova_utils
 from heat.common import template_format
 from heat.engine import parser
 from heat.engine import scheduler
 from heat.openstack.common import uuidutils
 from heat.tests.common import HeatTestCase
 from heat.tests import utils
-from heat.tests.utils import dummy_context
-from heat.tests.utils import setup_dummy_db
 
 
 instance_template = '''
@@ -78,7 +76,7 @@ group_template = '''
       "Type": "OS::Heat::InstanceGroup",
       "Properties": {
         "AvailabilityZones"      : ["nova"],
-        "LaunchConfigurationName": "Config",
+        "LaunchConfigurationName": { "Ref": "Config" },
         "Size"                   : "1"
       }
     }
@@ -91,13 +89,13 @@ class ServerTagsTest(HeatTestCase):
     def setUp(self):
         super(ServerTagsTest, self).setUp()
         self.fc = fakes.FakeClient()
-        setup_dummy_db()
+        utils.setup_dummy_db()
 
     def _setup_test_instance(self, intags=None, nova_tags=None):
         stack_name = 'tag_test'
         t = template_format.parse(instance_template)
         template = parser.Template(t)
-        stack = parser.Stack(dummy_context(), stack_name, template,
+        stack = parser.Stack(utils.dummy_context(), stack_name, template,
                              environment.Environment({'KeyName': 'test'}),
                              stack_id=uuidutils.generate_uuid())
 
@@ -111,8 +109,10 @@ class ServerTagsTest(HeatTestCase):
         instance.t = instance.stack.resolve_runtime_data(instance.t)
 
         # need to resolve the template functions
-        server_userdata = instance._build_userdata(
+        server_userdata = nova_utils.build_userdata(
+            instance,
             instance.t['Properties']['UserData'])
+        instance.mime_string = server_userdata
         self.m.StubOutWithMock(self.fc.servers, 'create')
         self.fc.servers.create(
             image=1, flavor=1, key_name='test',
@@ -139,14 +139,19 @@ class ServerTagsTest(HeatTestCase):
         stack_name = 'tag_test'
         t = template_format.parse(group_template)
         template = parser.Template(t)
-        stack = parser.Stack(dummy_context(), stack_name, template,
+        stack = parser.Stack(utils.dummy_context(), stack_name, template,
                              environment.Environment({'KeyName': 'test'}),
                              stack_id=uuidutils.generate_uuid())
 
         t['Resources']['WebServer']['Properties']['Tags'] = intags
-        group = autoscaling.InstanceGroup('WebServer',
-                                          t['Resources']['WebServer'],
-                                          stack)
+
+        # create the launch configuration
+        conf = stack.resources['Config']
+        self.assertEqual(None, conf.validate())
+        scheduler.TaskRunner(conf.create)()
+        self.assertEqual((conf.CREATE, conf.COMPLETE), conf.state)
+
+        group = stack.resources['WebServer']
 
         self.m.StubOutWithMock(instances.Instance, 'nova')
         instances.Instance.nova().MultipleTimes().AndReturn(self.fc)
@@ -168,6 +173,7 @@ class ServerTagsTest(HeatTestCase):
     def test_group_tags(self):
         tags = [{'Key': 'Food', 'Value': 'yum'}]
         metadata = dict((tm['Key'], tm['Value']) for tm in tags)
+        metadata['metering.groupname'] = 'WebServer'
         group = self._setup_test_group(intags=tags, nova_tags=metadata)
         self.m.ReplayAll()
         scheduler.TaskRunner(group.create)()

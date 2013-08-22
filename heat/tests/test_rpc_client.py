@@ -27,13 +27,13 @@ from heat.common import identifier
 from heat.rpc import api as rpc_api
 from heat.rpc import client as rpc_client
 from heat.openstack.common import rpc
-from heat.tests.utils import dummy_context
+from heat.tests import utils
 
 
 class EngineRpcAPITestCase(testtools.TestCase):
 
     def setUp(self):
-        self.context = dummy_context()
+        self.context = utils.dummy_context()
         cfg.CONF.set_default('rpc_backend',
                              'heat.openstack.common.rpc.impl_fake')
         cfg.CONF.set_default('verbose', True)
@@ -46,7 +46,7 @@ class EngineRpcAPITestCase(testtools.TestCase):
         super(EngineRpcAPITestCase, self).setUp()
 
     def _test_engine_api(self, method, rpc_method, **kwargs):
-        ctxt = dummy_context()
+        ctxt = utils.dummy_context()
         if 'rpcapi_class' in kwargs:
             rpcapi_class = kwargs['rpcapi_class']
             del kwargs['rpcapi_class']
@@ -83,6 +83,16 @@ class EngineRpcAPITestCase(testtools.TestCase):
         for arg, expected_arg in zip(self.fake_args, expected_args):
             self.assertEqual(arg, expected_arg)
 
+    def test_authenticated_to_backend(self):
+        self._test_engine_api('authenticated_to_backend', 'call')
+
+    def test_list_stacks(self):
+        self._test_engine_api('list_stacks', 'call')
+
+    def test_identify_stack(self):
+        self._test_engine_api('identify_stack', 'call',
+                              stack_name='wordpress')
+
     def test_show_stack(self):
         self._test_engine_api('show_stack', 'call', stack_identity='wordpress')
 
@@ -101,10 +111,6 @@ class EngineRpcAPITestCase(testtools.TestCase):
                               files={},
                               args={})
 
-    def test_validate_template(self):
-        self._test_engine_api('validate_template', 'call',
-                              template={u'Foo': u'bar'})
-
     def test_get_template(self):
         self._test_engine_api('get_template', 'call',
                               stack_identity=self.identity)
@@ -116,6 +122,19 @@ class EngineRpcAPITestCase(testtools.TestCase):
     def test_delete_stack_call(self):
         self._test_engine_api('delete_stack', 'call',
                               stack_identity=self.identity)
+
+    def test_validate_template(self):
+        self._test_engine_api('validate_template', 'call',
+                              template={u'Foo': u'bar'})
+
+    def test_list_resource_types(self):
+        self._test_engine_api('list_resource_types', 'call')
+
+    def test_resource_schema(self):
+        self._test_engine_api('resource_schema', 'call', type_name="TYPE")
+
+    def test_generate_template(self):
+        self._test_engine_api('generate_template', 'call', type_name="TYPE")
 
     def test_list_events(self):
         self._test_engine_api('list_events', 'call',
@@ -138,9 +157,6 @@ class EngineRpcAPITestCase(testtools.TestCase):
     def test_list_stack_resources(self):
         self._test_engine_api('list_stack_resources', 'call',
                               stack_identity=self.identity)
-
-    def test_generate_template(self):
-        self._test_engine_api('generate_template', 'call', type_name="TYPE")
 
     def test_stack_suspend(self):
         self._test_engine_api('stack_suspend', 'call',

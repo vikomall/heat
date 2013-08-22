@@ -51,15 +51,19 @@ class Stack(object):
     STATUSES = (IN_PROGRESS, FAILED, COMPLETE
                 ) = ('IN_PROGRESS', 'FAILED', 'COMPLETE')
 
-    created_time = timestamp.Timestamp(db_api.stack_get, 'created_at')
-    updated_time = timestamp.Timestamp(db_api.stack_get, 'updated_at')
+    created_time = timestamp.Timestamp(functools.partial(db_api.stack_get,
+                                                         show_deleted=True),
+                                       'created_at')
+    updated_time = timestamp.Timestamp(functools.partial(db_api.stack_get,
+                                                         show_deleted=True),
+                                       'updated_at')
 
     _zones = None
 
     def __init__(self, context, stack_name, tmpl, env=None,
                  stack_id=None, action=None, status=None,
                  status_reason='', timeout_mins=60, resolve_data=True,
-                 disable_rollback=True, parent_resource=None):
+                 disable_rollback=True, parent_resource=None, owner_id=None):
         '''
         Initialise from a context, name, Template object and (optionally)
         Environment object. The database ID may also be initialised, if the
@@ -73,6 +77,7 @@ class Stack(object):
                                ) % stack_name)
 
         self.id = stack_id
+        self.owner_id = owner_id
         self.context = context
         self.clients = Clients(context)
         self.t = tmpl
@@ -129,10 +134,11 @@ class Stack(object):
 
     @classmethod
     def load(cls, context, stack_id=None, stack=None, resolve_data=True,
-             parent_resource=None):
+             parent_resource=None, show_deleted=True):
         '''Retrieve a Stack from the database.'''
         if stack is None:
-            stack = db_api.stack_get(context, stack_id)
+            stack = db_api.stack_get(context, stack_id,
+                                     show_deleted=show_deleted)
         if stack is None:
             message = 'No stack exists with id "%s"' % str(stack_id)
             raise exception.NotFound(message)
@@ -142,11 +148,11 @@ class Stack(object):
         stack = cls(context, stack.name, template, env,
                     stack.id, stack.action, stack.status, stack.status_reason,
                     stack.timeout, resolve_data, stack.disable_rollback,
-                    parent_resource)
+                    parent_resource, owner_id=stack.owner_id)
 
         return stack
 
-    def store(self, owner=None):
+    def store(self):
         '''
         Store the stack in the database and return its ID
         If self.id is set, we update the existing stack
@@ -157,7 +163,7 @@ class Stack(object):
             'name': self.name,
             'raw_template_id': self.t.store(self.context),
             'parameters': self.env.user_env_as_dict(),
-            'owner_id': owner and owner.id,
+            'owner_id': self.owner_id,
             'user_creds_id': new_creds.id,
             'username': self.context.username,
             'tenant': self.context.tenant_id,
@@ -328,13 +334,9 @@ class Stack(object):
         def resource_action(r):
             # Find e.g resource.create and call it
             action_l = action.lower()
-            handle = getattr(r, '%s' % action_l, None)
-            if callable(handle):
-                return handle()
-            else:
-                raise exception.ResourceFailure(
-                    AttributeError(_('Resource action %s not found') %
-                                   action_l))
+            handle = getattr(r, '%s' % action_l)
+
+            return handle()
 
         action_task = scheduler.DependencyTaskGroup(self.dependencies,
                                                     resource_action,

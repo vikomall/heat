@@ -21,6 +21,7 @@ from heat.common import exception
 from heat.openstack.common import log as logging
 from heat.engine import scheduler
 from heat.engine.resources import instance
+from heat.engine.resources import nova_utils
 from heat.engine.resources.rackspace import rackspace_resource
 from heat.db.sqlalchemy import api as db_api
 
@@ -30,9 +31,9 @@ logger = logging.getLogger(__name__)
 class CloudServer(instance.Instance):
     """Resource for Rackspace Cloud Servers."""
 
-    properties_schema = {'Flavor': {'Type': 'String', 'Required': True},
-                         'ImageName': {'Type': 'String', 'Required': True},
-                         'UserData': {'Type': 'String'},
+    properties_schema = {'flavor': {'Type': 'String', 'Required': True},
+                         'image': {'Type': 'String', 'Required': True},
+                         'user_data': {'Type': 'String'},
                          'key_name': {'Type': 'String'},
                          'Volumes': {'Type': 'List'},
                          'name': {'Type': 'String'}}
@@ -66,6 +67,7 @@ bash -x /var/lib/cloud/data/cfn-userdata > /root/cfn-userdata.log 2>&1
 apt-get update
 apt-get install -y cloud-init python-boto python-pip gcc python-dev
 pip install heat-cfntools
+cfn-create-aws-symlinks --source /usr/local/bin
 """
 
     # - Fedora 17: Verified working
@@ -77,6 +79,7 @@ pip install heat-cfntools
     fedora_script = base_script % """\
 yum install -y cloud-init python-boto python-pip gcc python-devel
 pip-python install heat-cfntools
+cfn-create-aws-symlinks
 """
 
     # - Centos 6.4: Verified working
@@ -95,6 +98,7 @@ while fuser /var/lib/rpm/*; do sleep 1; done
 yum install -y cloud-init python-boto python-pip gcc python-devel \
   python-argparse
 pip-python install heat-cfntools
+cfn-create-aws-symlinks
 """
 
     # - Debian 7: Not working (heat-cfntools patch submitted)
@@ -138,19 +142,18 @@ zypper --non-interactive in cloud-init python-boto python-pip gcc python-devel
                      'rhel': rhel_script,
                      'ubuntu': ubuntu_script}
 
-    # Cache data retrieved from APIs in class attributes
-    _image_id_map = {}
-    _distro_map = {}
-    _server_map = {}
-
     # Template keys supported for handle_update.  Properties not
     # listed here trigger an UpdateReplace
     update_allowed_keys = ('Metadata', 'Properties')
-    update_allowed_properties = ('Flavor', 'name')
+    update_allowed_properties = ('flavor', 'name')
 
     def __init__(self, name, json_snippet, stack):
         super(CloudServer, self).__init__(name, json_snippet, stack)
         self._private_key = None
+        self._server = None
+        self._distro = None
+        self._public_ip = None
+        self._private_ip = None
         self.rs = rackspace_resource.RackspaceResource(name,
                                                        json_snippet,
                                                        stack)
@@ -171,34 +174,19 @@ zypper --non-interactive in cloud-init python-boto python-pip gcc python-devel
     @property
     def server(self):
         """Get the Cloud Server object."""
-        if self.resource_id in self.__class__._server_map:
-            return self.__class__._server_map[self.resource_id]
-        else:
-            server = self.nova().servers.get(self.resource_id)
-            self.__class__._server_map[self.resource_id] = server
-            return server
-
-    @property
-    def image_id(self):
-        """Get the image ID corresponding to the ImageName property."""
-        image_name = self.properties['ImageName']
-        if image_name in self.__class__._image_id_map:
-            return self.__class__._image_id_map[image_name]
-        else:
-            image_id = self._get_image_id(image_name)
-            self.__class__._image_id_map[image_name] = image_id
-            return image_id
+        if not self._server:
+            logger.debug("Calling nova().servers.get()")
+            self._server = self.nova().servers.get(self.resource_id)
+        return self._server
 
     @property
     def distro(self):
         """Get the Linux distribution for this server."""
-        if self.image_id in self.__class__._distro_map:
-            return self.__class__._distro_map[self.image_id]
-        else:
-            image = self.nova().images.get(self.image_id)
-            distro = image.metadata['os_distro']
-            self.__class__._distro_map[self.image_id] = distro
-            return distro
+        if not self._distro:
+            logger.debug("Calling nova().images.get()")
+            image = self.nova().images.get(self.properties['image'])
+            self._distro = image.metadata['os_distro']
+        return self._distro
 
     @property
     def script(self):
@@ -207,7 +195,8 @@ zypper --non-interactive in cloud-init python-boto python-pip gcc python-devel
 
     @property
     def flavors(self):
-        """Get the flavors from the API or cache (updated every 6 hours)."""
+        """Get the flavors from the API."""
+        logger.debug("Calling nova().flavors.list()")
         return [flavor.id for flavor in self.nova().flavors.list()]
 
     @property
@@ -231,48 +220,45 @@ zypper --non-interactive in cloud-init python-boto python-pip gcc python-devel
 
     def _get_ip(self, ip_type):
         """Return the IP of the Cloud Server."""
-        def ip_not_found():
-            exc = exception.Error("Could not determine the %s IP of %s." %
-                                  (ip_type, self.properties['ImageName']))
-            raise exception.ResourceFailure(exc)
+        if ip_type in self.server.addresses:
+            for ip in self.server.addresses[ip_type]:
+                if ip['version'] == 4:
+                    return ip['addr']
 
-        if ip_type not in self.server.addresses:
-            ip_not_found()
-        for ip in self.server.addresses[ip_type]:
-            if ip['version'] == 4:
-                return ip['addr']
-        ip_not_found()
+        raise exception.Error("Could not determine the %s IP of %s." %
+                              (ip_type, self.properties['image']))
 
     @property
     def public_ip(self):
         """Return the public IP of the Cloud Server."""
-        return self._get_ip('public')
+        if not self._public_ip:
+            self._public_ip = self._get_ip('public')
+        return self._public_ip
 
     @property
     def private_ip(self):
         """Return the private IP of the Cloud Server."""
-        try:
-            return self._get_ip('private')
-        except exception.ResourceFailure as ex:
-            logger.info(ex.message)
+        if not self._private_ip:
+            self._private_ip = self._get_ip('private')
+        return self._private_ip
 
     @property
     def has_userdata(self):
-        if self.properties['UserData'] or self.metadata != {}:
+        if self.properties['user_data'] or self.metadata != {}:
             return True
         else:
             return False
 
     def validate(self):
         """Validate user parameters."""
-        if self.properties['Flavor'] not in self.flavors:
-            return {'Error': "Flavor not found."}
+        if self.properties['flavor'] not in self.flavors:
+            return {'Error': "flavor not found."}
 
-        # It's okay if there's no script, as long as UserData and
-        # MetaData are empty
+        # It's okay if there's no script, as long as user_data and
+        # metadata are empty
         if not self.script and self.has_userdata:
-            return {'Error': "UserData/MetaData are not supported with %s." %
-                    self.properties['ImageName']}
+            return {'Error': "user_data/metadata are not supported with %s." %
+                    self.properties['image']}
 
     def _run_ssh_command(self, command):
         """Run a shell command on the Cloud Server via SSH."""
@@ -310,7 +296,7 @@ zypper --non-interactive in cloud-init python-boto python-pip gcc python-devel
         server and then trigger cloud-init.
         """
         # Retrieve server creation parameters from properties
-        flavor = self.properties['Flavor']
+        flavor = self.properties['flavor']
 
         # Generate SSH public/private keypair
         if self._private_key is not None:
@@ -321,14 +307,16 @@ zypper --non-interactive in cloud-init python-boto python-pip gcc python-devel
         public_keys = [rsa.publickey().exportKey('OpenSSH')]
         if self.properties.get('key_name'):
             key_name = self.properties['key_name']
-            public_keys.append(self._get_keypair(key_name).public_key)
+            public_keys.append(nova_utils.get_keypair(self.nova(),
+                                                      key_name).public_key)
         personality_files = {
             "/root/.ssh/authorized_keys": '\n'.join(public_keys)}
 
         # Create server
         client = self.nova().servers
+        logger.debug("Calling nova().servers.create()")
         server = client.create(self.physical_resource_name(),
-                               self.image_id,
+                               self.properties['image'],
                                flavor,
                                files=personality_files)
 
@@ -343,6 +331,7 @@ zypper --non-interactive in cloud-init python-boto python-pip gcc python-devel
         return scheduler.PollingTaskGroup(tasks)
 
     def _attach_volume(self, volume_id, device):
+        logger.debug("Calling nova().volumes.create_server_volume()")
         self.nova().volumes.create_server_volume(self.server.id,
                                                  volume_id,
                                                  device or None)
@@ -378,8 +367,8 @@ zypper --non-interactive in cloud-init python-boto python-pip gcc python-devel
 
         if self.has_userdata:
             # Create heat-script and userdata files on server
-            raw_userdata = self.properties['UserData'] or ''
-            userdata = self._build_userdata(raw_userdata)
+            raw_userdata = self.properties['user_data'] or ''
+            userdata = nova_utils.build_userdata(self, raw_userdata)
 
             files = [{'path': "/tmp/userdata", 'data': userdata},
                      {'path': "/root/heat-script.sh", 'data': self.script}]
@@ -399,17 +388,18 @@ zypper --non-interactive in cloud-init python-boto python-pip gcc python-devel
             yield
             try:
                 server.get()
-                if server.status == "ERROR":
-                    exc = exception.Error("Deletion of server %s failed." %
+                if server.status == "DELETED":
+                    break
+                elif server.status == "ERROR":
+                    raise exception.Error("Deletion of server %s failed." %
                                           server.name)
-                    raise exception.ResourceFailure(exc)
             except novaexception.NotFound:
                 break
 
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
         """Try to update a Cloud Server's parameters.
 
-        If the Cloud Server's Metadata or Flavor changed, update the
+        If the Cloud Server's Metadata or flavor changed, update the
         Cloud Server.  If any other parameters changed, re-create the
         Cloud Server with the new parameters.
         """
@@ -425,10 +415,10 @@ zypper --non-interactive in cloud-init python-boto python-pip gcc python-devel
                       "/root/cfn-userdata.log 2>&1"
             self._run_ssh_command(command)
 
-        if 'Flavor' in prop_diff:
-            self.flavor = json_snippet['Properties']['Flavor']
+        if 'flavor' in prop_diff:
+            self.flavor = json_snippet['Properties']['flavor']
             self.server.resize(self.flavor)
-            resize = scheduler.TaskRunner(self._check_resize,
+            resize = scheduler.TaskRunner(nova_utils.check_resize,
                                           self.server,
                                           self.flavor)
             resize(wait_time=1.0)

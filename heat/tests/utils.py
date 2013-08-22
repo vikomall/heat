@@ -16,6 +16,9 @@ import functools
 import random
 import string
 import sys
+import uuid
+
+import sqlalchemy
 
 from heat.common import context
 from heat.common import exception
@@ -24,6 +27,19 @@ from heat.engine import parser
 
 from heat.db.sqlalchemy.session import get_engine
 from heat.db import migration
+
+
+class UUIDStub(object):
+    def __init__(self, value):
+        self.value = value
+
+    def __enter__(self):
+        self.uuid4 = uuid.uuid4
+        uuid_stub = lambda: self.value
+        uuid.uuid4 = uuid_stub
+
+    def __exit__(self, *exc_info):
+        uuid.uuid4 = self.uuid4
 
 
 def random_name():
@@ -98,7 +114,18 @@ def wr_delete_after(test_fn):
 def setup_dummy_db():
     migration.db_sync()
     engine = get_engine()
-    conn = engine.connect()
+    engine.connect()
+
+
+def reset_dummy_db():
+    engine = get_engine()
+    meta = sqlalchemy.MetaData()
+    meta.reflect(bind=engine)
+
+    for table in reversed(meta.sorted_tables):
+        if table.name == 'migrate_version':
+            continue
+        engine.execute(table.delete())
 
 
 def dummy_context(user='test_username', tenant_id='test_tenant_id',

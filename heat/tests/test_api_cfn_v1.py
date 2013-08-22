@@ -26,7 +26,7 @@ from heat.rpc import api as rpc_api
 from heat.api.aws import exception
 import heat.api.cfn.v1.stacks as stacks
 from heat.tests.common import HeatTestCase
-from heat.tests.utils import dummy_context
+from heat.tests import utils
 
 policy_path = os.path.dirname(os.path.realpath(__file__)) + "/policy/"
 
@@ -42,7 +42,7 @@ class CfnStackControllerTest(HeatTestCase):
         qs = "&".join(["=".join([k, str(params[k])]) for k in params])
         environ = {'REQUEST_METHOD': 'GET', 'QUERY_STRING': qs}
         req = Request(environ)
-        req.context = dummy_context()
+        req.context = utils.dummy_context()
         return req
 
     # The tests
@@ -1736,3 +1736,5 @@ class CfnStackControllerTest(HeatTestCase):
             bind_port = 8000
         cfgopts = DummyConfig()
         self.controller = stacks.StackController(options=cfgopts)
+        self.controller.policy.enforcer.policy_path = (policy_path +
+                                                       'deny_stack_user.json')

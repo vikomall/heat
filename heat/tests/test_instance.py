@@ -16,19 +16,19 @@ import copy
 
 import mox
 
+from heat.engine import clients
 from heat.engine import environment
 from heat.tests.v1_1 import fakes
-from heat.engine.resources import instance as instances
 from heat.common import exception
 from heat.common import template_format
 from heat.engine import parser
 from heat.engine import resource
 from heat.engine import scheduler
+from heat.engine.resources import instance as instances
+from heat.engine.resources import nova_utils
 from heat.openstack.common import uuidutils
 from heat.tests.common import HeatTestCase
 from heat.tests import utils
-from heat.tests.utils import dummy_context
-from heat.tests.utils import setup_dummy_db
 
 
 wp_template = '''
@@ -61,12 +61,12 @@ class InstancesTest(HeatTestCase):
     def setUp(self):
         super(InstancesTest, self).setUp()
         self.fc = fakes.FakeClient()
-        setup_dummy_db()
+        utils.setup_dummy_db()
 
     def _setup_test_stack(self, stack_name):
         t = template_format.parse(wp_template)
         template = parser.Template(t)
-        stack = parser.Stack(dummy_context(), stack_name, template,
+        stack = parser.Stack(utils.dummy_context(), stack_name, template,
                              environment.Environment({'KeyName': 'test'}),
                              stack_id=uuidutils.generate_uuid())
         return (t, stack)
@@ -88,8 +88,10 @@ class InstancesTest(HeatTestCase):
         instance.t = instance.stack.resolve_runtime_data(instance.t)
 
         # need to resolve the template functions
-        server_userdata = instance._build_userdata(
+        server_userdata = nova_utils.build_userdata(
+            instance,
             instance.t['Properties']['UserData'])
+        instance.mime_string = server_userdata
         self.m.StubOutWithMock(self.fc.servers, 'create')
         self.fc.servers.create(
             image=1, flavor=1, key_name='test',
@@ -201,6 +203,42 @@ class InstancesTest(HeatTestCase):
         self.m.ReplayAll()
 
         self.assertRaises(exception.ImageNotFound, instance.handle_create)
+
+        self.m.VerifyAll()
+
+    class FakeVolumeAttach:
+        def started(self):
+            return False
+
+    def test_instance_create_unexpected_status(self):
+        return_server = self.fc.servers.list()[1]
+        instance = self._create_test_instance(return_server,
+                                              'test_instance_create')
+        return_server.get = lambda: None
+        return_server.status = 'BOGUS'
+        self.assertRaises(exception.Error,
+                          instance.check_create_complete,
+                          (return_server, self.FakeVolumeAttach()))
+
+    def test_instance_create_error_status(self):
+        return_server = self.fc.servers.list()[1]
+        instance = self._create_test_instance(return_server,
+                                              'test_instance_create')
+        return_server.status = 'ERROR'
+        return_server.fault = {
+            'message': 'NoValidHost',
+            'code': 500,
+            'created': '2013-08-14T03:12:10Z'
+        }
+        self.m.StubOutWithMock(return_server, 'get')
+        return_server.get()
+        return_server.get().AndRaise(
+            clients.novaclient.exceptions.NotFound('test'))
+        self.m.ReplayAll()
+
+        self.assertRaises(exception.Error,
+                          instance.check_create_complete,
+                          (return_server, self.FakeVolumeAttach()))
 
         self.m.VerifyAll()
 

@@ -21,6 +21,9 @@
 # List of directories to search for Plugins (list value)
 #plugin_dirs=/usr/lib64/heat,/usr/lib/heat
 
+# The directory to search for environment files (string value)
+#environment_dir=/etc/heat/environment.d
+
 # Name of the engine node. This can be an opaque identifier.It
 # is not necessarily a hostname, FQDN, or IP address. (string
 # value)
@@ -81,36 +84,29 @@
 
 
 #
-# Options defined in heat.common.policy
-#
-
-#  (string value)
-#policy_file=policy.json
-
-#  (string value)
-#policy_default_rule=default
-
-
-#
 # Options defined in heat.common.wsgi
 #
 
-#  (string value)
+# Address to bind the server.  Useful when selecting a
+# particular network interface. (string value)
 #bind_host=0.0.0.0
 
-#  (integer value)
+# The port on which the server will listen. (integer value)
 #bind_port=<None>
 
-#  (integer value)
+# Number of backlog requests to configure the socket with
+# (integer value)
 #backlog=4096
 
-#  (string value)
+# Location of the SSL Certificate File to use for SSL mode
+# (string value)
 #cert_file=<None>
 
-#  (string value)
+# Location of the SSL Key File to use for enabling SSL mode
+# (string value)
 #key_file=<None>
 
-#  (integer value)
+# Number of workers for Heat service (integer value)
 #workers=0
 
 
@@ -135,8 +131,26 @@
 # Options defined in heat.openstack.common.eventlet_backdoor
 #
 
-# port for eventlet backdoor to listen (integer value)
+# Enable eventlet backdoor.  Acceptable values are 0, <port>,
+# and <start>:<end>, where 0 results in listening on a random
+# tcp port number; <port> results in listening on the
+# specified port number (and not enabling backdoor if that
+# port is in use); and <start>:<end> results in listening on
+# the smallest unused port number within the specified range
+# of port numbers.  The chosen port is displayed in the
+# service's log file. (string value)
 #backdoor_port=<None>
+
+
+#
+# Options defined in heat.openstack.common.lockutils
+#
+
+# Whether to disable inter-process locks (boolean value)
+#disable_process_locking=false
+
+# Directory to use for lock files. (string value)
+#lock_path=<None>
 
 
 #
@@ -194,9 +208,9 @@
 # (string value)
 #log_config=<None>
 
-# A logging.Formatter log message format string which may use
-# any of the available logging.LogRecord attributes. This
-# option is deprecated.  Please use
+# DEPRECATED. A logging.Formatter log message format string
+# which may use any of the available logging.LogRecord
+# attributes. This option is deprecated.  Please use
 # logging_context_format_string and
 # logging_default_format_string instead. (string value)
 #log_format=<None>
@@ -254,6 +268,18 @@
 
 
 #
+# Options defined in heat.openstack.common.policy
+#
+
+# JSON file containing policy (string value)
+#policy_file=policy.json
+
+# Rule enforced when requested rule is not found (string
+# value)
+#policy_default_rule=default
+
+
+#
 # Options defined in heat.openstack.common.rpc
 #
 
@@ -277,7 +303,7 @@
 
 # Modules of exceptions that are permitted to be recreatedupon
 # receiving exception data from an rpc call. (list value)
-#allowed_rpc_exception_modules=heat.openstack.common.exception,nova.exception,cinder.exception,exceptions
+#allowed_rpc_exception_modules=heat.openstack.common.exception,heat.common.exception,nova.exception,cinder.exception,exceptions
 
 # If passed, use a fake RabbitMQ provider (boolean value)
 #fake_rabbit=false
@@ -288,11 +314,23 @@
 
 
 #
+# Options defined in heat.openstack.common.rpc.amqp
+#
+
+# Use durable queues in amqp. (boolean value)
+#amqp_durable_queues=false
+
+# Auto-delete queues in amqp. (boolean value)
+#amqp_auto_delete=false
+
+
+#
 # Options defined in heat.openstack.common.rpc.impl_kombu
 #
 
-# SSL version to use (valid only if SSL enabled) (string
-# value)
+# SSL version to use (valid only if SSL enabled). valid values
+# are TLSv1, SSLv23 and SSLv3. SSLv2 may be available on some
+# distributions (string value)
 #kombu_ssl_version=
 
 # SSL key file (valid only if SSL enabled) (string value)
@@ -340,9 +378,6 @@
 # default of 0 implies an infinite retry count) (integer
 # value)
 #rabbit_max_retries=0
-
-# use durable queues in RabbitMQ (boolean value)
-#rabbit_durable_queues=false
 
 # use H/A queues in RabbitMQ (x-ha-policy: all).You need to
 # wipe RabbitMQ database when changing this option. (boolean
@@ -426,13 +461,46 @@
 #matchmaker_heartbeat_ttl=600
 
 
+[ssl]
+
+#
+# Options defined in heat.openstack.common.sslutils
+#
+
+# CA certificate file to use to verify connecting clients
+# (string value)
+#ca_file=<None>
+
+# Certificate file to use when starting the server securely
+# (string value)
+#cert_file=<None>
+
+# Private key file to use when starting the server securely
+# (string value)
+#key_file=<None>
+
+
+[database]
+
+#
+# Options defined in heat.openstack.common.db.api
+#
+
+# The backend to use for db (string value)
+#backend=sqlalchemy
+
+# Enable the experimental use of thread pooling for all DB API
+# calls (boolean value)
+#use_tpool=false
+
+
 [paste_deploy]
 
 #
 # Options defined in heat.common.config
 #
 
-#  (string value)
+# The flavor to use (string value)
 #flavor=<None>
 
 # The API paste config file to use (string value)
@@ -455,11 +523,8 @@
 # Options defined in heat.api.aws.ec2token
 #
 
-#  (string value)
+# Authentication Endpoint URI (string value)
 #auth_uri=<None>
-
-#  (string value)
-#keystone_ec2_uri=<None>
 
 
 [matchmaker_redis]
@@ -478,6 +543,20 @@
 #password=<None>
 
 
+[auth_password]
+
+#
+# Options defined in heat.common.config
+#
+
+# Allow orchestration of multiple clouds (boolean value)
+#multi_cloud=false
+
+# Allowed targets for auth_uri when multi_cloud is enabled.
+# If empty, all targets will be allowed. (list value)
+#allowed_auth_uris=
+
+
 [matchmaker_ring]
 
 #
@@ -488,4 +567,3 @@
 #ringfile=/etc/oslo/matchmaker_ring.json
 
 
-# Total option count: 107

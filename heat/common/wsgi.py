@@ -2,6 +2,7 @@
 
 # Copyright 2010 United States Government as represented by the
 # Administrator of the National Aeronautics and Space Administration.
+# Copyright 2013 IBM Corp.
 # All Rights Reserved.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -43,32 +44,38 @@ import webob.dec
 import webob.exc
 
 from heat.common import exception
+from heat.openstack.common import gettextutils
 from heat.openstack.common import importutils
-from heat.openstack.common.gettextutils import _
 
 
 URL_LENGTH_LIMIT = 50000
 
-# TODO(shadower) remove this once eventlet 0.9.17 is in distros Heat
-# supports (notably Fedora 17 and Ubuntu 12.04 and newer)
-eventlet.wsgi.MAX_REQUEST_LINE = URL_LENGTH_LIMIT
-
 bind_opts = [
-    cfg.StrOpt('bind_host', default='0.0.0.0'),
-    cfg.IntOpt('bind_port'),
+    cfg.StrOpt('bind_host', default='0.0.0.0',
+               help=_('Address to bind the server.  Useful when '
+                      'selecting a particular network interface.')),
+    cfg.IntOpt('bind_port',
+               help=_('The port on which the server will listen.'))
 ]
 
 cfg.CONF.register_opts(bind_opts)
 
 socket_opts = [
-    cfg.IntOpt('backlog', default=4096),
-    cfg.StrOpt('cert_file'),
-    cfg.StrOpt('key_file'),
+    cfg.IntOpt('backlog', default=4096,
+               help=_("Number of backlog requests "
+                      "to configure the socket with")),
+    cfg.StrOpt('cert_file', default=None,
+               help=_("Location of the SSL Certificate File "
+                      "to use for SSL mode")),
+    cfg.StrOpt('key_file', default=None,
+               help=_("Location of the SSL Key File to use "
+                      "for enabling SSL mode")),
 ]
 
 cfg.CONF.register_opts(socket_opts)
 
-workers_opts = cfg.IntOpt('workers', default=0)
+workers_opts = cfg.IntOpt('workers', default=0,
+                          help=_("Number of workers for Heat service"))
 
 cfg.CONF.register_opt(workers_opts)
 
@@ -246,7 +253,7 @@ class Server(object):
         eventlet.patcher.monkey_patch(all=False, socket=True)
         self.pool = eventlet.GreenPool(size=self.threads)
         try:
-            eventlet_wsgi_server(self.sock,
+            eventlet.wsgi.server(self.sock,
                                  self.application,
                                  custom_pool=self.pool,
                                  url_length_limit=URL_LENGTH_LIMIT,
@@ -259,23 +266,10 @@ class Server(object):
     def _single_run(self, application, sock):
         """Start a WSGI server in a new green thread."""
         self.logger.info(_("Starting single process server"))
-        eventlet_wsgi_server(sock, application,
+        eventlet.wsgi.server(sock, application,
                              custom_pool=self.pool,
                              url_length_limit=URL_LENGTH_LIMIT,
                              log=WritableLogger(self.logger))
-
-
-def eventlet_wsgi_server(sock, application, **kwargs):
-    '''
-    Return a new instance of the eventlet wsgi server with the proper url limit
-    in a way that's compatible with eventlet 0.9.16 and 0.9.17.
-    '''
-    try:
-        return eventlet.wsgi.server(sock, application, **kwargs)
-    # TODO(shadower) remove this when we don't support eventlet 0.9.16 anymore
-    except TypeError:
-        kwargs.pop('url_length_limit', None)
-        return eventlet.wsgi.server(sock, application, **kwargs)
 
 
 class Middleware(object):
@@ -321,13 +315,13 @@ class Debug(Middleware):
 
     @webob.dec.wsgify
     def __call__(self, req):
-        print ("*" * 40) + " REQUEST ENVIRON"
+        print(("*" * 40) + " REQUEST ENVIRON")
         for key, value in req.environ.items():
             print(key, "=", value)
         print
         resp = req.get_response(self.application)
 
-        print ("*" * 40) + " RESPONSE HEADERS"
+        print(("*" * 40) + " RESPONSE HEADERS")
         for (key, value) in resp.headers.iteritems():
             print(key, "=", value)
         print
@@ -342,7 +336,7 @@ class Debug(Middleware):
         Iterator that prints the contents of a wrapper string iterator
         when iterated.
         """
-        print ("*" * 40) + " BODY"
+        print(("*" * 40) + " BODY")
         for part in app_iter:
             sys.stdout.write(part)
             sys.stdout.flush()
@@ -430,6 +424,12 @@ class Request(webob.Request):
             raise exception.InvalidContentType(content_type=content_type)
         else:
             return content_type
+
+    def best_match_language(self):
+        """Determine language for returned response."""
+        all_languages = gettextutils.get_available_languages('heat')
+        return self.accept_language.best_match(all_languages,
+                                               default_match='en_US')
 
 
 def is_json_content_type(request):
@@ -589,7 +589,27 @@ class Resource(object):
                                           request, **action_args)
         except TypeError as err:
             logging.error(_('Exception handling resource: %s') % str(err))
-            raise webob.exc.HTTPBadRequest()
+            msg = _('The server could not comply with the request since\r\n'
+                    'it is either malformed or otherwise incorrect.\r\n')
+            err = webob.exc.HTTPBadRequest(msg)
+            http_exc = translate_exception(err, request.best_match_language())
+            # NOTE(luisg): We disguise HTTP exceptions, otherwise they will be
+            # treated by wsgi as responses ready to be sent back and they
+            # won't make it into the pipeline app that serializes errors
+            raise exception.HTTPExceptionDisguise(http_exc)
+        except webob.exc.HTTPException as err:
+            if isinstance(err, (webob.exc.HTTPOk, webob.exc.HTTPRedirection)):
+                # Some HTTPException are actually not errors, they are
+                # responses ready to be sent back to the users, so we don't
+                # error log, disguise or translate those
+                raise
+            logging.error(_("Returning %(code)s to user: %(explanation)s"),
+                          {'code': err.code, 'explanation': err.explanation})
+            http_exc = translate_exception(err, request.best_match_language())
+            raise exception.HTTPExceptionDisguise(http_exc)
+        except Exception as err:
+            logging.error(_("Unexpected error occurred serving API: %s") % err)
+            raise translate_exception(err, request.best_match_language())
 
         # Here we support either passing in a serializer or detecting it
         # based on the content type.
@@ -651,6 +671,26 @@ class Resource(object):
             pass
 
         return args
+
+
+def translate_exception(exc, locale):
+    """Translates all translatable elements of the given exception."""
+    exc.message = gettextutils.get_localized_message(exc.message, locale)
+    if isinstance(exc, webob.exc.HTTPError):
+        # If the explanation is not a Message, that means that the
+        # explanation is the default, generic and not translatable explanation
+        # from webop.exc. Since the explanation is the error shown when the
+        # exception is converted to a response, let's actually swap it with
+        # message, since message is what gets passed in at construction time
+        # in the API
+        if not isinstance(exc.explanation, gettextutils.Message):
+            exc.explanation = exc.message
+            exc.detail = ''
+        else:
+            exc.explanation = \
+                gettextutils.get_localized_message(exc.explanation, locale)
+            exc.detail = gettextutils.get_localized_message(exc.detail, locale)
+    return exc
 
 
 class BasePasteFactory(object):

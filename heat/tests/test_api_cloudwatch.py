@@ -23,7 +23,7 @@ from heat.api.aws import exception
 import heat.api.cloudwatch.watch as watches
 from heat.rpc import api as engine_api
 from heat.tests.common import HeatTestCase
-from heat.tests.utils import dummy_context
+from heat.tests import utils
 
 
 class WatchControllerTest(HeatTestCase):
@@ -37,7 +37,7 @@ class WatchControllerTest(HeatTestCase):
         qs = "&".join(["=".join([k, str(params[k])]) for k in params])
         environ = {'REQUEST_METHOD': 'GET', 'QUERY_STRING': qs}
         req = Request(environ)
-        req.context = dummy_context()
+        req.context = utils.dummy_context()
         return req
 
     # The tests
@@ -524,5 +524,6 @@ class WatchControllerTest(HeatTestCase):
             bind_port = 8003
         cfgopts = DummyConfig()
         self.controller = watches.WatchController(options=cfgopts)
-        self.controller.policy.policy_path = None
+        self.controller.policy.enforcer.policy_path = (self.policy_path +
+                                                       'deny_stack_user.json')
         self.addCleanup(self.m.VerifyAll)

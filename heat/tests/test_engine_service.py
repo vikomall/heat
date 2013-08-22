@@ -30,16 +30,17 @@ import heat.db.api as db_api
 from heat.common import identifier
 from heat.common import template_format
 from heat.engine import parser
+from heat.engine.resource import _register_class
 from heat.engine import service
 from heat.engine.properties import Properties
 from heat.engine.resources import instance as instances
+from heat.engine.resources import nova_utils
 from heat.engine import resource as rsrs
 from heat.engine import watchrule
 from heat.openstack.common import threadgroup
 from heat.tests.common import HeatTestCase
+from heat.tests import generic_resource as generic_rsrc
 from heat.tests import utils
-from heat.tests.utils import dummy_context
-from heat.tests.utils import setup_dummy_db
 
 
 wp_template = '''
@@ -109,18 +110,6 @@ policy_template = '''
 '''
 
 
-def create_context(mocks, user='stacks_test_user',
-                   tenant_id='test_admin', password='stacks_test_password'):
-    ctx = dummy_context()
-    mocks.StubOutWithMock(ctx, 'username')
-    mocks.StubOutWithMock(ctx, 'tenant_id')
-    mocks.StubOutWithMock(ctx, 'password')
-    ctx.username = user
-    ctx.tenant_id = tenant_id
-    ctx.password = password
-    return ctx
-
-
 def get_wordpress_stack(stack_name, ctx):
     t = template_format.parse(wp_template)
     template = parser.Template(t)
@@ -142,7 +131,9 @@ def setup_mocks(mocks, stack):
     instances.Instance.nova().MultipleTimes().AndReturn(fc)
 
     instance = stack.resources['WebServer']
-    server_userdata = instance._build_userdata(instance.properties['UserData'])
+    user_data = instance.properties['UserData']
+    server_userdata = nova_utils.build_userdata(instance, user_data)
+    instance.mime_string = server_userdata
     mocks.StubOutWithMock(fc.servers, 'create')
     fc.servers.create(image=744, flavor=3, key_name='test',
                       name=utils.PhysName(stack.name, 'WebServer'),
@@ -169,7 +160,9 @@ def setup_stack(stack_name, ctx, create_res=True):
 def clean_up_stack(stack, delete_res=True):
     if delete_res:
         m = mox.Mox()
-        fc = setup_mocks(m, stack)
+        fc = fakes.FakeClient()
+        m.StubOutWithMock(instances.Instance, 'nova')
+        instances.Instance.nova().MultipleTimes().AndReturn(fc)
         m.StubOutWithMock(fc.client, 'get_servers_9999')
         get = fc.client.get_servers_9999
         get().AndRaise(service.clients.novaclient.exceptions.NotFound(404))
@@ -236,10 +229,10 @@ class DummyThreadGroup(object):
 class StackCreateTest(HeatTestCase):
     def setUp(self):
         super(StackCreateTest, self).setUp()
-        setup_dummy_db()
+        utils.setup_dummy_db()
 
     def test_wordpress_single_instance_stack_create(self):
-        stack = get_wordpress_stack('test_stack', create_context(self.m))
+        stack = get_wordpress_stack('test_stack', utils.dummy_context())
         setup_mocks(self.m, stack)
         self.m.ReplayAll()
         stack.store()
@@ -250,7 +243,7 @@ class StackCreateTest(HeatTestCase):
         self.assertNotEqual(stack.resources['WebServer'].ipaddress, '0.0.0.0')
 
     def test_wordpress_single_instance_stack_delete(self):
-        ctx = create_context(self.m)
+        ctx = utils.dummy_context()
         stack = get_wordpress_stack('test_stack', ctx)
         fc = setup_mocks(self.m, stack)
         self.m.ReplayAll()
@@ -281,8 +274,8 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
 
     def setUp(self):
         super(StackServiceCreateUpdateDeleteTest, self).setUp()
-        setup_dummy_db()
-        self.ctx = create_context(self.m)
+        utils.setup_dummy_db()
+        self.ctx = utils.dummy_context()
 
         self.man = service.EngineService('a-host', 'a-topic')
 
@@ -372,12 +365,12 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
         params = {'foo': 'bar'}
         template = '{ "Template": "data" }'
 
-        ctx = self.ctx = create_context(self.m, password=None)
+        ctx = self.ctx = utils.dummy_context(password=None)
         self.assertRaises(exception.MissingCredentialError,
                           self.man.create_stack, ctx, stack_name, template,
                           params, None, {})
 
-        ctx = self.ctx = create_context(self.m, user=None)
+        ctx = self.ctx = utils.dummy_context(user=None)
         self.assertRaises(exception.MissingCredentialError,
                           self.man.create_stack, ctx, stack_name, template,
                           params, None, {})
@@ -535,13 +528,13 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
 
         stack = get_wordpress_stack(stack_name, self.ctx)
 
-        ctx = self.ctx = create_context(self.m, password=None)
+        ctx = self.ctx = utils.dummy_context(password=None)
         self.assertRaises(exception.MissingCredentialError,
                           self.man.update_stack,
                           ctx, stack.identifier(), template, params,
                           None, {})
 
-        ctx = self.ctx = create_context(self.m, user=None)
+        ctx = self.ctx = utils.dummy_context(user=None)
         self.assertRaises(exception.MissingCredentialError,
                           self.man.update_stack,
                           ctx, stack.identifier(), template, params,
@@ -552,8 +545,8 @@ class StackServiceSuspendResumeTest(HeatTestCase):
 
     def setUp(self):
         super(StackServiceSuspendResumeTest, self).setUp()
-        setup_dummy_db()
-        self.ctx = create_context(self.m)
+        utils.setup_dummy_db()
+        self.ctx = utils.dummy_context()
 
         self.man = service.EngineService('a-host', 'a-topic')
 
@@ -619,12 +612,13 @@ class StackServiceTest(HeatTestCase):
     def setUp(self):
         super(StackServiceTest, self).setUp()
 
-        self.ctx = create_context(self.m,
-                                  tenant_id='stack_service_test_tenant')
+        self.ctx = utils.dummy_context(tenant_id='stack_service_test_tenant')
         self.eng = service.EngineService('a-host', 'a-topic')
         cfg.CONF.set_default('heat_stack_user_role', 'stack_user_role')
+        _register_class('ResourceWithPropsType',
+                        generic_rsrc.ResourceWithProps)
 
-        setup_dummy_db()
+        utils.setup_dummy_db()
 
     @stack_context('service_identify_test_stack', False)
     def test_stack_identify(self):
@@ -665,7 +659,7 @@ class StackServiceTest(HeatTestCase):
         self.assertEqual(self.stack.id,
                          db_api.stack_get_by_name(self.ctx,
                                                   self.stack.name).id)
-        ctx2 = create_context(self.m, tenant_id='stack_service_test_tenant2')
+        ctx2 = utils.dummy_context(tenant_id='stack_service_test_tenant2')
         self.assertEqual(None, db_api.stack_get_by_name(ctx2, self.stack.name))
 
     @stack_context('service_event_list_test_stack')
@@ -673,7 +667,8 @@ class StackServiceTest(HeatTestCase):
         self.m.StubOutWithMock(service.EngineService, '_get_stack')
         s = db_api.stack_get(self.ctx, self.stack.id)
         service.EngineService._get_stack(self.ctx,
-                                         self.stack.identifier()).AndReturn(s)
+                                         self.stack.identifier(),
+                                         show_deleted=True).AndReturn(s)
         self.m.ReplayAll()
 
         events = self.eng.list_events(self.ctx, self.stack.identifier())
@@ -715,6 +710,64 @@ class StackServiceTest(HeatTestCase):
             self.assertEqual(self.stack.name, ev['stack_name'])
 
             self.assertTrue('event_time' in ev)
+
+        self.m.VerifyAll()
+
+    @stack_context('service_event_list_deleted_resource_test_stack')
+    def test_stack_event_list_deleted_resource(self):
+        rsrs._register_class('GenericResourceType',
+                             generic_rsrc.GenericResource)
+
+        def run(stack_id, func, *args):
+            func(*args)
+        self.eng._start_in_thread = run
+
+        new_tmpl = {'Resources': {'AResource': {'Type':
+                                                'GenericResourceType'}}}
+
+        self.m.StubOutWithMock(instances.Instance, 'handle_delete')
+        instances.Instance.handle_delete()
+
+        self.m.ReplayAll()
+
+        result = self.eng.update_stack(self.ctx, self.stack.identifier(),
+                                       new_tmpl, None, None, {})
+
+        # The self.stack reference needs to be updated. Since the underlying
+        # stack is updated in update_stack, the original reference is now
+        # pointing to an orphaned stack object.
+        self.stack = parser.Stack.load(self.ctx, stack_id=result['stack_id'])
+
+        self.assertEqual(self.stack.identifier(), result)
+        self.assertTrue(isinstance(result, dict))
+        self.assertTrue(result['stack_id'])
+        events = self.eng.list_events(self.ctx, self.stack.identifier())
+
+        self.assertEqual(6, len(events))
+
+        for ev in events:
+            self.assertIn('event_identity', ev)
+            self.assertEqual(dict, type(ev['event_identity']))
+            self.assertTrue(ev['event_identity']['path'].rsplit('/', 1)[1])
+
+            self.assertIn('logical_resource_id', ev)
+            self.assertIn('physical_resource_id', ev)
+            self.assertIn('resource_properties', ev)
+            self.assertIn('resource_status_reason', ev)
+
+            self.assertIn(ev['resource_action'], ('CREATE', 'DELETE'))
+            self.assertIn(ev['resource_status'], ('IN_PROGRESS', 'COMPLETE'))
+
+            self.assertIn('resource_type', ev)
+            self.assertIn(ev['resource_type'], ('AWS::EC2::Instance',
+                                                'GenericResourceType'))
+
+            self.assertIn('stack_identity', ev)
+
+            self.assertIn('stack_name', ev)
+            self.assertEqual(self.stack.name, ev['stack_name'])
+
+            self.assertIn('event_time', ev)
 
         self.m.VerifyAll()
 
@@ -792,7 +845,8 @@ class StackServiceTest(HeatTestCase):
 
         self.m.StubOutWithMock(service.EngineService, '_get_stack')
         service.EngineService._get_stack(
-            self.ctx, non_exist_identifier).AndRaise(exception.StackNotFound)
+            self.ctx, non_exist_identifier,
+            show_deleted=True).AndRaise(exception.StackNotFound)
         self.m.ReplayAll()
 
         self.assertRaises(exception.StackNotFound,
@@ -807,7 +861,8 @@ class StackServiceTest(HeatTestCase):
 
         self.m.StubOutWithMock(service.EngineService, '_get_stack')
         service.EngineService._get_stack(
-            self.ctx, non_exist_identifier).AndRaise(exception.InvalidTenant)
+            self.ctx, non_exist_identifier,
+            show_deleted=True).AndRaise(exception.InvalidTenant)
         self.m.ReplayAll()
 
         self.assertRaises(exception.InvalidTenant,
@@ -821,7 +876,8 @@ class StackServiceTest(HeatTestCase):
         self.m.StubOutWithMock(service.EngineService, '_get_stack')
         s = db_api.stack_get(self.ctx, self.stack.id)
         service.EngineService._get_stack(self.ctx,
-                                         self.stack.identifier()).AndReturn(s)
+                                         self.stack.identifier(),
+                                         show_deleted=True).AndReturn(s)
         self.m.ReplayAll()
 
         sl = self.eng.show_stack(self.ctx, self.stack.identifier())
@@ -862,11 +918,34 @@ class StackServiceTest(HeatTestCase):
         self.assertNotEqual(s['description'].find('WordPress'), -1)
         self.assertTrue('parameters' in s)
 
-    @stack_context('service_list_resource_types_test_stack', False)
     def test_list_resource_types(self):
         resources = self.eng.list_resource_types(self.ctx)
         self.assertTrue(isinstance(resources, list))
         self.assertTrue('AWS::EC2::Instance' in resources)
+
+    def test_resource_schema(self):
+        type_name = 'ResourceWithPropsType'
+        expected = {
+            'resource_type': type_name,
+            'properties': {
+                'Foo': {
+                    'type': 'string',
+                    'required': False,
+                },
+            },
+            'attributes': {
+                'foo': {'description': 'A generic attribute'},
+                'Foo': {'description': 'Another generic attribute'},
+            },
+        }
+
+        schema = self.eng.resource_schema(self.ctx, type_name=type_name)
+        self.assertEqual(expected, schema)
+
+    def test_resource_schema_nonexist(self):
+        self.assertRaises(exception.ResourceTypeNotFound,
+                          self.eng.resource_schema,
+                          self.ctx, type_name='Bogus')
 
     @stack_context('service_stack_resource_describe__test_stack')
     def test_stack_resource_describe(self):
@@ -1214,7 +1293,7 @@ class StackServiceTest(HeatTestCase):
 
     def test_periodic_watch_task_created(self):
         stack = get_stack('period_watch_task_created',
-                          create_context(self.m),
+                          utils.dummy_context(),
                           alarm_template)
         self.stack = stack
         self.m.ReplayAll()

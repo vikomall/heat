@@ -16,14 +16,14 @@ import copy
 
 from heat.common import exception
 from heat.common import template_format
-from heat.engine.resources import autoscaling as asc
 from heat.engine.resources import instance
 from heat.engine import resource
 from heat.engine import resources
 from heat.engine import scheduler
+from heat.engine import parser
 from heat.tests.common import HeatTestCase
-from heat.tests.utils import setup_dummy_db
-from heat.tests.utils import parse_stack
+from heat.tests import utils
+
 
 ig_template = '''
 {
@@ -58,7 +58,7 @@ ig_template = '''
 class InstanceGroupTest(HeatTestCase):
     def setUp(self):
         super(InstanceGroupTest, self).setUp()
-        setup_dummy_db()
+        utils.setup_dummy_db()
 
     def _stub_create(self, num, instance_class=instance.Instance):
         """
@@ -67,20 +67,23 @@ class InstanceGroupTest(HeatTestCase):
         :param instance_class: The resource class to expect to be created
                                instead of instance.Instance.
         """
+        self.m.StubOutWithMock(parser.Stack, 'validate')
+        parser.Stack.validate()
 
         self.m.StubOutWithMock(instance_class, 'handle_create')
         self.m.StubOutWithMock(instance_class, 'check_create_complete')
         cookie = object()
+
         for x in range(num):
             instance_class.handle_create().AndReturn(cookie)
         instance_class.check_create_complete(cookie).AndReturn(False)
         instance_class.check_create_complete(
             cookie).MultipleTimes().AndReturn(True)
 
-    def create_instance_group(self, t, stack, resource_name):
-        rsrc = asc.InstanceGroup(resource_name,
-                                 t['Resources'][resource_name],
-                                 stack)
+    def create_resource(self, t, stack, resource_name):
+        # subsequent resources may need to reference previous created resources
+        # use the stack's resource objects instead of instantiating new ones
+        rsrc = stack.resources[resource_name]
         self.assertEqual(None, rsrc.validate())
         scheduler.TaskRunner(rsrc.create)()
         self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
@@ -89,7 +92,7 @@ class InstanceGroupTest(HeatTestCase):
     def test_instance_group(self):
 
         t = template_format.parse(ig_template)
-        stack = parse_stack(t)
+        stack = utils.parse_stack(t)
 
         # start with min then delete
         self._stub_create(1)
@@ -97,11 +100,13 @@ class InstanceGroupTest(HeatTestCase):
         instance.Instance.FnGetAtt('PublicIp').AndReturn('1.2.3.4')
 
         self.m.ReplayAll()
-        rsrc = self.create_instance_group(t, stack, 'JobServerGroup')
-
+        conf = self.create_resource(t, stack, 'JobServerConfig')
+        rsrc = self.create_resource(t, stack, 'JobServerGroup')
         self.assertEqual('JobServerGroup', rsrc.FnGetRefId())
         self.assertEqual('1.2.3.4', rsrc.FnGetAtt('InstanceList'))
-        self.assertEqual('JobServerGroup-0', rsrc.resource_id)
+
+        nested = rsrc.nested()
+        self.assertEqual(nested.id, rsrc.resource_id)
 
         rsrc.delete()
         self.m.VerifyAll()
@@ -123,12 +128,12 @@ class InstanceGroupTest(HeatTestCase):
                         original_instance)
 
         t = template_format.parse(ig_template)
-        stack = parse_stack(t)
+        stack = utils.parse_stack(t)
         self._stub_create(1, instance_class=MyInstance)
 
         self.m.ReplayAll()
-
-        rsrc = self.create_instance_group(t, stack, 'JobServerGroup')
+        conf = self.create_resource(t, stack, 'JobServerConfig')
+        rsrc = self.create_resource(t, stack, 'JobServerGroup')
         self.assertEqual('JobServerGroup', rsrc.FnGetRefId())
         rsrc.delete()
         self.m.VerifyAll()
@@ -136,15 +141,16 @@ class InstanceGroupTest(HeatTestCase):
     def test_missing_image(self):
 
         t = template_format.parse(ig_template)
-        stack = parse_stack(t)
+        stack = utils.parse_stack(t)
 
-        rsrc = asc.InstanceGroup('JobServerGroup',
-                                 t['Resources']['JobServerGroup'],
-                                 stack)
+        conf = self.create_resource(t, stack, 'JobServerConfig')
+        rsrc = stack.resources['JobServerGroup']
 
         self.m.StubOutWithMock(instance.Instance, 'handle_create')
         not_found = exception.ImageNotFound(image_name='bla')
         instance.Instance.handle_create().AndRaise(not_found)
+        self.m.StubOutWithMock(parser.Stack, 'validate')
+        parser.Stack.validate()
 
         self.m.ReplayAll()
 
@@ -158,13 +164,12 @@ class InstanceGroupTest(HeatTestCase):
         t = template_format.parse(ig_template)
         properties = t['Resources']['JobServerGroup']['Properties']
         properties['Size'] = '2'
-        stack = parse_stack(t)
+        stack = utils.parse_stack(t)
 
         self._stub_create(2)
         self.m.ReplayAll()
-        rsrc = self.create_instance_group(t, stack, 'JobServerGroup')
-        self.assertEqual('JobServerGroup-0,JobServerGroup-1',
-                         rsrc.resource_id)
+        conf = self.create_resource(t, stack, 'JobServerConfig')
+        rsrc = self.create_resource(t, stack, 'JobServerGroup')
 
         self.m.VerifyAll()
         self.m.UnsetStubs()
@@ -186,9 +191,6 @@ class InstanceGroupTest(HeatTestCase):
         prop_diff = {'Size': '5'}
         self.assertEqual(None, rsrc.handle_update(update_snippet, tmpl_diff,
                          prop_diff))
-        assert_str = ','.join(['JobServerGroup-%s' % x for x in range(5)])
-        self.assertEqual(assert_str,
-                         rsrc.resource_id)
         self.assertEqual('10.0.0.2,10.0.0.3,10.0.0.4,10.0.0.5,10.0.0.6',
                          rsrc.FnGetAtt('InstanceList'))
 
@@ -199,13 +201,12 @@ class InstanceGroupTest(HeatTestCase):
         t = template_format.parse(ig_template)
         properties = t['Resources']['JobServerGroup']['Properties']
         properties['Size'] = '2'
-        stack = parse_stack(t)
+        stack = utils.parse_stack(t)
 
         self._stub_create(2)
         self.m.ReplayAll()
-        rsrc = self.create_instance_group(t, stack, 'JobServerGroup')
-        self.assertEqual('JobServerGroup-0,JobServerGroup-1',
-                         rsrc.resource_id)
+        conf = self.create_resource(t, stack, 'JobServerConfig')
+        rsrc = self.create_resource(t, stack, 'JobServerGroup')
 
         self.m.ReplayAll()
 
@@ -221,18 +222,17 @@ class InstanceGroupTest(HeatTestCase):
         t = template_format.parse(ig_template)
         properties = t['Resources']['JobServerGroup']['Properties']
         properties['Size'] = '2'
-        stack = parse_stack(t)
+        stack = utils.parse_stack(t)
 
         self._stub_create(2)
         self.m.ReplayAll()
-        rsrc = self.create_instance_group(t, stack, 'JobServerGroup')
-        self.assertEqual('JobServerGroup-0,JobServerGroup-1',
-                         rsrc.resource_id)
+        conf = self.create_resource(t, stack, 'JobServerConfig')
+        rsrc = self.create_resource(t, stack, 'JobServerGroup')
 
         self.m.ReplayAll()
 
         update_snippet = copy.deepcopy(rsrc.parsed_template())
-        update_snippet['Properties']['LaunchConfigurationName'] = 'wibble'
+        update_snippet['Properties']['AvailabilityZones'] = ['wibble']
         self.assertRaises(resource.UpdateReplace,
                           rsrc.update, update_snippet)
 

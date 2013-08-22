@@ -20,6 +20,7 @@ from testtools import skipIf
 from heat.common import exception
 from heat.common import template_format
 from heat.engine import scheduler
+from heat.engine.resources import instance
 from heat.engine.resources import volume as vol
 from heat.engine import clients
 from heat.engine import resource
@@ -27,8 +28,6 @@ from heat.openstack.common.importutils import try_import
 from heat.tests.common import HeatTestCase
 from heat.tests.v1_1 import fakes
 from heat.tests import utils
-from heat.tests.utils import setup_dummy_db
-from heat.tests.utils import parse_stack
 
 from cinderclient.v1 import client as cinderclient
 
@@ -54,7 +53,8 @@ volume_template = '''
       "Type" : "AWS::EC2::Volume",
       "Properties" : {
         "Size" : "1",
-        "AvailabilityZone" : "nova",
+        "AvailabilityZone" : {"Fn::GetAtt": ["WikiDatabase",
+                                             "AvailabilityZone"]},
         "Tags" : [{ "Key" : "Usage", "Value" : "Wiki Data Volume" }]
       }
     },
@@ -83,7 +83,7 @@ class VolumeTest(HeatTestCase):
         self.m.StubOutWithMock(self.cinder_fc.volumes, 'delete')
         self.m.StubOutWithMock(self.fc.volumes, 'create_server_volume')
         self.m.StubOutWithMock(self.fc.volumes, 'delete_server_volume')
-        setup_dummy_db()
+        utils.setup_dummy_db()
 
     def create_volume(self, t, stack, resource_name):
         data = t['Resources'][resource_name]
@@ -137,7 +137,7 @@ class VolumeTest(HeatTestCase):
         self.m.ReplayAll()
 
         t = template_format.parse(volume_template)
-        stack = parse_stack(t, stack_name=stack_name)
+        stack = utils.parse_stack(t, stack_name=stack_name)
 
         rsrc = self.create_volume(t, stack, 'DataVolume')
         self.assertEqual(fv.status, 'available')
@@ -156,6 +156,48 @@ class VolumeTest(HeatTestCase):
 
         self.m.VerifyAll()
 
+    def test_volume_default_az(self):
+        fv = FakeVolume('creating', 'available')
+        stack_name = 'test_volume_stack'
+
+        # create script
+        self.m.StubOutWithMock(instance.Instance, 'handle_create')
+        self.m.StubOutWithMock(instance.Instance, 'check_create_complete')
+        self.m.StubOutWithMock(vol.VolumeAttachment, 'handle_create')
+        self.m.StubOutWithMock(vol.VolumeAttachment, 'check_create_complete')
+        instance.Instance.handle_create().AndReturn(None)
+        instance.Instance.check_create_complete(None).AndReturn(True)
+        clients.OpenStackClients.cinder().MultipleTimes().AndReturn(
+            self.cinder_fc)
+        vol_name = utils.PhysName(stack_name, 'DataVolume')
+        self.cinder_fc.volumes.create(
+            size=u'1', availability_zone=None,
+            display_description=vol_name,
+            display_name=vol_name).AndReturn(fv)
+        vol.VolumeAttachment.handle_create().AndReturn(None)
+        vol.VolumeAttachment.check_create_complete(None).AndReturn(True)
+
+        # delete script
+        self.m.StubOutWithMock(instance.Instance, 'handle_delete')
+        self.m.StubOutWithMock(vol.VolumeAttachment, 'handle_delete')
+        instance.Instance.handle_delete().AndReturn(None)
+        self.cinder_fc.volumes.get('vol-123').AndRaise(
+            clients.cinderclient.exceptions.NotFound('Not found'))
+        vol.VolumeAttachment.handle_delete().AndReturn(None)
+        self.m.ReplayAll()
+
+        t = template_format.parse(volume_template)
+        stack = utils.parse_stack(t, stack_name=stack_name)
+
+        rsrc = stack['DataVolume']
+        self.assertEqual(rsrc.validate(), None)
+        scheduler.TaskRunner(stack.create)()
+        self.assertEqual(rsrc.state, (rsrc.CREATE, rsrc.COMPLETE))
+
+        self.assertEqual(stack.delete(), None)
+
+        self.m.VerifyAll()
+
     def test_volume_create_error(self):
         fv = FakeVolume('creating', 'error')
         stack_name = 'test_volume_create_error_stack'
@@ -166,7 +208,7 @@ class VolumeTest(HeatTestCase):
 
         t = template_format.parse(volume_template)
         t['Resources']['DataVolume']['Properties']['AvailabilityZone'] = 'nova'
-        stack = parse_stack(t, stack_name=stack_name)
+        stack = utils.parse_stack(t, stack_name=stack_name)
 
         rsrc = vol.Volume('DataVolume',
                           t['Resources']['DataVolume'],
@@ -189,7 +231,7 @@ class VolumeTest(HeatTestCase):
 
         t = template_format.parse(volume_template)
         t['Resources']['DataVolume']['Properties']['AvailabilityZone'] = 'nova'
-        stack = parse_stack(t, stack_name=stack_name)
+        stack = utils.parse_stack(t, stack_name=stack_name)
 
         scheduler.TaskRunner(stack['DataVolume'].create)()
         self.assertEqual(fv.status, 'available')
@@ -220,7 +262,7 @@ class VolumeTest(HeatTestCase):
 
         t = template_format.parse(volume_template)
         t['Resources']['DataVolume']['Properties']['AvailabilityZone'] = 'nova'
-        stack = parse_stack(t, stack_name=stack_name)
+        stack = utils.parse_stack(t, stack_name=stack_name)
 
         scheduler.TaskRunner(stack['DataVolume'].create)()
         self.assertEqual(fv.status, 'available')
@@ -266,7 +308,7 @@ class VolumeTest(HeatTestCase):
 
         t = template_format.parse(volume_template)
         t['Resources']['DataVolume']['Properties']['AvailabilityZone'] = 'nova'
-        stack = parse_stack(t, stack_name=stack_name)
+        stack = utils.parse_stack(t, stack_name=stack_name)
 
         scheduler.TaskRunner(stack['DataVolume'].create)()
         self.assertEqual(fv.status, 'available')
@@ -296,7 +338,7 @@ class VolumeTest(HeatTestCase):
 
         t = template_format.parse(volume_template)
         t['Resources']['DataVolume']['Properties']['AvailabilityZone'] = 'nova'
-        stack = parse_stack(t, stack_name=stack_name)
+        stack = utils.parse_stack(t, stack_name=stack_name)
 
         scheduler.TaskRunner(stack['DataVolume'].create)()
         rsrc = self.create_attachment(t, stack, 'MountPoint')
@@ -325,7 +367,7 @@ class VolumeTest(HeatTestCase):
 
         t = template_format.parse(volume_template)
         t['Resources']['DataVolume']['Properties']['AvailabilityZone'] = 'nova'
-        stack = parse_stack(t, stack_name=stack_name)
+        stack = utils.parse_stack(t, stack_name=stack_name)
 
         scheduler.TaskRunner(stack['DataVolume'].create)()
         self.assertEqual(fv.status, 'available')
@@ -354,7 +396,7 @@ class VolumeTest(HeatTestCase):
 
         t = template_format.parse(volume_template)
         t['Resources']['DataVolume']['Properties']['AvailabilityZone'] = 'nova'
-        stack = parse_stack(t, stack_name=stack_name)
+        stack = utils.parse_stack(t, stack_name=stack_name)
 
         scheduler.TaskRunner(stack['DataVolume'].create)()
         self.assertEqual(fv.status, 'available')
@@ -382,7 +424,7 @@ class VolumeTest(HeatTestCase):
 
         t = template_format.parse(volume_template)
         t['Resources']['DataVolume']['DeletionPolicy'] = 'Snapshot'
-        stack = parse_stack(t, stack_name=stack_name)
+        stack = utils.parse_stack(t, stack_name=stack_name)
 
         rsrc = self.create_volume(t, stack, 'DataVolume')
 
@@ -406,7 +448,7 @@ class VolumeTest(HeatTestCase):
 
         t = template_format.parse(volume_template)
         t['Resources']['DataVolume']['DeletionPolicy'] = 'Snapshot'
-        stack = parse_stack(t, stack_name=stack_name)
+        stack = utils.parse_stack(t, stack_name=stack_name)
 
         rsrc = self.create_volume(t, stack, 'DataVolume')
 
@@ -429,7 +471,7 @@ class VolumeTest(HeatTestCase):
         t = template_format.parse(volume_template)
         t['Resources']['DataVolume']['DeletionPolicy'] = 'Snapshot'
         t['Resources']['DataVolume']['Properties']['AvailabilityZone'] = 'nova'
-        stack = parse_stack(t, stack_name=stack_name)
+        stack = utils.parse_stack(t, stack_name=stack_name)
         rsrc = vol.Volume('DataVolume',
                           t['Resources']['DataVolume'],
                           stack)
@@ -463,7 +505,7 @@ class VolumeTest(HeatTestCase):
 
         t = template_format.parse(volume_template)
         t['Resources']['DataVolume']['Properties']['SnapshotId'] = 'backup-123'
-        stack = parse_stack(t, stack_name=stack_name)
+        stack = utils.parse_stack(t, stack_name=stack_name)
 
         self.create_volume(t, stack, 'DataVolume')
         self.assertEqual(fv.status, 'available')
@@ -493,7 +535,7 @@ class VolumeTest(HeatTestCase):
         t = template_format.parse(volume_template)
         t['Resources']['DataVolume']['Properties']['SnapshotId'] = 'backup-123'
         t['Resources']['DataVolume']['Properties']['AvailabilityZone'] = 'nova'
-        stack = parse_stack(t, stack_name=stack_name)
+        stack = utils.parse_stack(t, stack_name=stack_name)
 
         rsrc = vol.Volume('DataVolume',
                           t['Resources']['DataVolume'],
@@ -536,7 +578,7 @@ class VolumeTest(HeatTestCase):
             'snapshot_id': 'snap-123',
             'source_volid': 'vol-012',
         }
-        stack = parse_stack(t, stack_name=stack_name)
+        stack = utils.parse_stack(t, stack_name=stack_name)
 
         rsrc = vol.CinderVolume('DataVolume',
                                 t['Resources']['DataVolume'],
@@ -567,7 +609,7 @@ class VolumeTest(HeatTestCase):
             'size': '1',
             'availability_zone': 'nova',
         }
-        stack = parse_stack(t, stack_name=stack_name)
+        stack = utils.parse_stack(t, stack_name=stack_name)
 
         rsrc = vol.CinderVolume('DataVolume',
                                 t['Resources']['DataVolume'],
@@ -605,7 +647,7 @@ class VolumeTest(HeatTestCase):
             'size': '1',
             'availability_zone': 'nova',
         }
-        stack = parse_stack(t, stack_name=stack_name)
+        stack = utils.parse_stack(t, stack_name=stack_name)
 
         rsrc = vol.CinderVolume('DataVolume',
                                 t['Resources']['DataVolume'],
@@ -657,7 +699,7 @@ class VolumeTest(HeatTestCase):
             'volume_id': {'Ref': 'DataVolume'},
             'mountpoint': '/dev/vdc'
         }
-        stack = parse_stack(t, stack_name=stack_name)
+        stack = utils.parse_stack(t, stack_name=stack_name)
 
         scheduler.TaskRunner(stack['DataVolume'].create)()
         self.assertEqual(fv.status, 'available')

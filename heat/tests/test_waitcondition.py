@@ -15,15 +15,12 @@
 import datetime
 import time
 import json
-import uuid
 
 from oslo.config import cfg
 
 from heat.tests.common import HeatTestCase
 from heat.tests import fakes
-from heat.tests.utils import dummy_context
-from heat.tests.utils import setup_dummy_db
-from heat.tests.utils import stack_delete_after
+from heat.tests import utils
 
 import heat.db.api as db_api
 from heat.common import template_format
@@ -76,24 +73,11 @@ test_template_wc_count = '''
 '''
 
 
-class UUIDStub(object):
-    def __init__(self, value):
-        self.value = value
-
-    def __enter__(self):
-        self.uuid4 = uuid.uuid4
-        uuid_stub = lambda: self.value
-        uuid.uuid4 = uuid_stub
-
-    def __exit__(self, *exc_info):
-        uuid.uuid4 = self.uuid4
-
-
 class WaitConditionTest(HeatTestCase):
 
     def setUp(self):
         super(WaitConditionTest, self).setUp()
-        setup_dummy_db()
+        utils.setup_dummy_db()
         self.m.StubOutWithMock(wc.WaitConditionHandle,
                                'get_status')
 
@@ -103,6 +87,10 @@ class WaitConditionTest(HeatTestCase):
         self.stack_id = 'STACKABCD1234'
         self.fc = fakes.FakeKeystoneClient()
 
+    def tearDown(self):
+        super(WaitConditionTest, self).tearDown()
+        utils.reset_dummy_db()
+
     # Note tests creating a stack should be decorated with @stack_delete_after
     # to ensure the stack is properly cleaned up
     def create_stack(self, stack_name='test_stack',
@@ -110,13 +98,13 @@ class WaitConditionTest(HeatTestCase):
                      stub=True):
         temp = template_format.parse(template)
         template = parser.Template(temp)
-        ctx = dummy_context(tenant_id='test_tenant')
+        ctx = utils.dummy_context(tenant_id='test_tenant')
         stack = parser.Stack(ctx, stack_name, template,
                              environment.Environment(params),
                              disable_rollback=True)
 
         # Stub out the stack ID so we have a known value
-        with UUIDStub(self.stack_id):
+        with utils.UUIDStub(self.stack_id):
             stack.store()
 
         if stub:
@@ -131,7 +119,7 @@ class WaitConditionTest(HeatTestCase):
 
         return stack
 
-    @stack_delete_after
+    @utils.stack_delete_after
     def test_post_success_to_handle(self):
         self.stack = self.create_stack()
         wc.WaitConditionHandle.get_status().AndReturn([])
@@ -151,7 +139,7 @@ class WaitConditionTest(HeatTestCase):
         self.assertEqual(r.name, 'WaitHandle')
         self.m.VerifyAll()
 
-    @stack_delete_after
+    @utils.stack_delete_after
     def test_post_failure_to_handle(self):
         self.stack = self.create_stack()
         wc.WaitConditionHandle.get_status().AndReturn([])
@@ -172,7 +160,7 @@ class WaitConditionTest(HeatTestCase):
         self.assertEqual(r.name, 'WaitHandle')
         self.m.VerifyAll()
 
-    @stack_delete_after
+    @utils.stack_delete_after
     def test_post_success_to_handle_count(self):
         self.stack = self.create_stack(template=test_template_wc_count)
         wc.WaitConditionHandle.get_status().AndReturn([])
@@ -194,7 +182,7 @@ class WaitConditionTest(HeatTestCase):
         self.assertEqual(r.name, 'WaitHandle')
         self.m.VerifyAll()
 
-    @stack_delete_after
+    @utils.stack_delete_after
     def test_post_failure_to_handle_count(self):
         self.stack = self.create_stack(template=test_template_wc_count)
         wc.WaitConditionHandle.get_status().AndReturn([])
@@ -215,7 +203,7 @@ class WaitConditionTest(HeatTestCase):
         self.assertEqual(r.name, 'WaitHandle')
         self.m.VerifyAll()
 
-    @stack_delete_after
+    @utils.stack_delete_after
     def test_timeout(self):
         st = time.time()
 
@@ -249,7 +237,7 @@ class WaitConditionTest(HeatTestCase):
                           rsrc.handle_update, {}, {}, {})
         self.m.VerifyAll()
 
-    @stack_delete_after
+    @utils.stack_delete_after
     def test_FnGetAtt(self):
         self.stack = self.create_stack()
         wc.WaitConditionHandle.get_status().AndReturn(['SUCCESS'])
@@ -279,7 +267,7 @@ class WaitConditionTest(HeatTestCase):
         self.assertEqual(wc_att, u'{"123": "foo", "456": "dog"}')
         self.m.VerifyAll()
 
-    @stack_delete_after
+    @utils.stack_delete_after
     def test_validate_handle_url_bad_stackid(self):
         self.m.ReplayAll()
 
@@ -298,7 +286,7 @@ class WaitConditionTest(HeatTestCase):
 
         self.m.VerifyAll()
 
-    @stack_delete_after
+    @utils.stack_delete_after
     def test_validate_handle_url_bad_stackname(self):
         self.m.ReplayAll()
 
@@ -315,7 +303,7 @@ class WaitConditionTest(HeatTestCase):
 
         self.m.VerifyAll()
 
-    @stack_delete_after
+    @utils.stack_delete_after
     def test_validate_handle_url_bad_tenant(self):
         self.m.ReplayAll()
 
@@ -332,7 +320,7 @@ class WaitConditionTest(HeatTestCase):
 
         self.m.VerifyAll()
 
-    @stack_delete_after
+    @utils.stack_delete_after
     def test_validate_handle_url_bad_resource(self):
         self.m.ReplayAll()
 
@@ -349,7 +337,7 @@ class WaitConditionTest(HeatTestCase):
 
         self.m.VerifyAll()
 
-    @stack_delete_after
+    @utils.stack_delete_after
     def test_validate_handle_url_bad_resource_type(self):
         self.m.ReplayAll()
 
@@ -374,18 +362,22 @@ class WaitConditionHandleTest(HeatTestCase):
                              'http://127.0.0.1:8000/v1/waitcondition')
 
         self.fc = fakes.FakeKeystoneClient()
-        setup_dummy_db()
+        utils.setup_dummy_db()
         self.stack = self.create_stack()
+
+    def tearDown(self):
+        super(WaitConditionHandleTest, self).tearDown()
+        utils.reset_dummy_db()
 
     def create_stack(self, stack_name='test_stack2', params={}):
         temp = template_format.parse(test_template_waitcondition)
         template = parser.Template(temp)
-        ctx = dummy_context(tenant_id='test_tenant')
+        ctx = utils.dummy_context(tenant_id='test_tenant')
         stack = parser.Stack(ctx, stack_name, template,
                              environment.Environment(params),
                              disable_rollback=True)
         # Stub out the UUID for this test, so we can get an expected signature
-        with UUIDStub('STACKABCD1234'):
+        with utils.UUIDStub('STACKABCD1234'):
             stack.store()
 
         # Stub waitcondition status so all goes CREATE_COMPLETE
@@ -406,7 +398,7 @@ class WaitConditionHandleTest(HeatTestCase):
 
         return stack
 
-    @stack_delete_after
+    @utils.stack_delete_after
     def test_handle(self):
         created_time = datetime.datetime(2012, 11, 29, 13, 49, 37)
 
@@ -432,7 +424,7 @@ class WaitConditionHandleTest(HeatTestCase):
                           rsrc.handle_update, {}, {}, {})
         self.m.VerifyAll()
 
-    @stack_delete_after
+    @utils.stack_delete_after
     def test_metadata_update(self):
         rsrc = self.stack.resources['WaitHandle']
         self.assertEqual(rsrc.state, (rsrc.CREATE, rsrc.COMPLETE))
@@ -446,7 +438,7 @@ class WaitConditionHandleTest(HeatTestCase):
         self.assertEqual(rsrc.metadata, handle_metadata)
         self.m.VerifyAll()
 
-    @stack_delete_after
+    @utils.stack_delete_after
     def test_metadata_update_invalid(self):
         rsrc = self.stack.resources['WaitHandle']
         self.assertEqual(rsrc.state, (rsrc.CREATE, rsrc.COMPLETE))
@@ -489,7 +481,7 @@ class WaitConditionHandleTest(HeatTestCase):
                           new_metadata=err_metadata)
         self.m.VerifyAll()
 
-    @stack_delete_after
+    @utils.stack_delete_after
     def test_get_status(self):
         rsrc = self.stack.resources['WaitHandle']
         self.assertEqual(rsrc.state, (rsrc.CREATE, rsrc.COMPLETE))
@@ -515,7 +507,7 @@ class WaitConditionHandleTest(HeatTestCase):
         wc.WaitConditionHandle.keystone().MultipleTimes().AndReturn(self.fc)
         self.m.ReplayAll()
 
-    @stack_delete_after
+    @utils.stack_delete_after
     def test_get_status_reason(self):
         rsrc = self.stack.resources['WaitHandle']
         self.assertEqual(rsrc.state, (rsrc.CREATE, rsrc.COMPLETE))

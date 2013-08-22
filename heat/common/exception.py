@@ -20,7 +20,6 @@
 import functools
 import urlparse
 import sys
-from heat.openstack.common.gettextutils import _
 from heat.openstack.common import exception
 
 
@@ -267,10 +266,12 @@ class WatchRuleNotFound(OpenstackException):
 class ResourceFailure(OpenstackException):
     message = _("%(exc_type)s: %(message)s")
 
-    def __init__(self, exception):
+    def __init__(self, exception, resource, action=None):
         if isinstance(exception, ResourceFailure):
             exception = getattr(exception, 'exc', exception)
         self.exc = exception
+        self.resource = resource
+        self.action = action
         exc_type = type(exception).__name__
         super(ResourceFailure, self).__init__(exc_type=exc_type,
                                               message=str(exception))
@@ -278,3 +279,21 @@ class ResourceFailure(OpenstackException):
 
 class NotSupported(OpenstackException):
     message = _("%(feature)s is not supported.")
+
+
+class ResourcePropertyConflict(OpenstackException):
+    message = _('Cannot define the following properties at the same time: %s.')
+
+    def __init__(self, *args):
+        self.message = self.message % ", ".join(args)
+        super(ResourcePropertyConflict, self).__init__()
+
+
+class HTTPExceptionDisguise(Exception):
+    """Disguises HTTP exceptions so they can be handled by the webob fault
+    application in the wsgi pipeline.
+    """
+
+    def __init__(self, exception):
+        self.exc = exception
+        self.tb = sys.exc_info()[2]

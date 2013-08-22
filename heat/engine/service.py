@@ -24,6 +24,7 @@ from heat.common import context
 from heat.db import api as db_api
 from heat.engine import api
 from heat.rpc import api as rpc_api
+from heat.engine import attributes
 from heat.engine import clients
 from heat.engine.event import Event
 from heat.engine import environment
@@ -100,13 +101,17 @@ class EngineService(service.Service):
         wrs = db_api.watch_rule_get_all_by_stack(cnxt,
                                                  stack_id)
 
-        # reset the last_evaluated so we don't fire off alarms when
-        # the engine has not been running.
         now = timeutils.utcnow()
+        start_watch_thread = False
         for wr in wrs:
+            # reset the last_evaluated so we don't fire off alarms when
+            # the engine has not been running.
             db_api.watch_rule_update(cnxt, wr.id, {'last_evaluated': now})
 
-        if len(wrs) > 0:
+            if wr.state != rpc_api.WATCH_STATE_CEILOMETER_CONTROLLED:
+                start_watch_thread = True
+
+        if start_watch_thread:
             self._timer_in_thread(stack_id, self._periodic_watcher_task,
                                   sid=stack_id)
 
@@ -133,7 +138,7 @@ class EngineService(service.Service):
         arg2 -> Name or UUID of the stack to look up.
         """
         if uuidutils.is_uuid_like(stack_name):
-            s = db_api.stack_get(cnxt, stack_name)
+            s = db_api.stack_get(cnxt, stack_name, show_deleted=True)
         else:
             s = db_api.stack_get_by_name(cnxt, stack_name)
         if s:
@@ -142,14 +147,15 @@ class EngineService(service.Service):
         else:
             raise exception.StackNotFound(stack_name=stack_name)
 
-    def _get_stack(self, cnxt, stack_identity):
+    def _get_stack(self, cnxt, stack_identity, show_deleted=False):
         identity = identifier.HeatIdentifier(**stack_identity)
 
         if identity.tenant != cnxt.tenant_id:
             raise exception.InvalidTenant(target=identity.tenant,
                                           actual=cnxt.tenant_id)
 
-        s = db_api.stack_get(cnxt, identity.stack_id)
+        s = db_api.stack_get(cnxt, identity.stack_id,
+                             show_deleted=show_deleted)
 
         if s is None:
             raise exception.StackNotFound(stack_name=identity.stack_name)
@@ -167,7 +173,7 @@ class EngineService(service.Service):
         arg2 -> Name of the stack you want to show, or None to show all
         """
         if stack_identity is not None:
-            stacks = [self._get_stack(cnxt, stack_identity)]
+            stacks = [self._get_stack(cnxt, stack_identity, show_deleted=True)]
         else:
             stacks = db_api.stack_get_all_by_tenant(cnxt) or []
 
@@ -360,7 +366,7 @@ class EngineService(service.Service):
         arg1 -> RPC context.
         arg2 -> Name of the stack you want to see.
         """
-        s = self._get_stack(cnxt, stack_identity)
+        s = self._get_stack(cnxt, stack_identity, show_deleted=True)
         if s:
             return s.raw_template.template
         return None
@@ -393,6 +399,34 @@ class EngineService(service.Service):
         """
         return list(resource.get_types())
 
+    def resource_schema(self, cnxt, type_name):
+        """
+        Return the schema of the specified type.
+        arg1 -> RPC context.
+        arg2 -> Name of the resource type to obtain the schema of.
+        """
+        try:
+            resource_class = resource.get_class(type_name)
+        except exception.StackValidationFailed:
+            raise exception.ResourceTypeNotFound(type_name=type_name)
+
+        def properties_schema():
+            for name, schema_dict in resource_class.properties_schema.items():
+                schema = properties.Schema.from_legacy(schema_dict)
+                if schema.implemented:
+                    yield name, dict(schema)
+
+        def attributes_schema():
+            for schema_item in resource_class.attributes_schema.items():
+                schema = attributes.Attribute(*schema_item)
+                yield schema.name, {schema.DESCRIPTION: schema.description}
+
+        return {
+            rpc_api.RES_SCHEMA_RES_TYPE: type_name,
+            rpc_api.RES_SCHEMA_PROPERTIES: dict(properties_schema()),
+            rpc_api.RES_SCHEMA_ATTRIBUTES: dict(attributes_schema()),
+        }
+
     def generate_template(self, cnxt, type_name):
         """
         Generate a template based on the specified type.
@@ -414,7 +448,7 @@ class EngineService(service.Service):
         """
 
         if stack_identity is not None:
-            st = self._get_stack(cnxt, stack_identity)
+            st = self._get_stack(cnxt, stack_identity, show_deleted=True)
 
             events = db_api.event_get_all_by_stack(cnxt, st.id)
         else:
@@ -662,9 +696,24 @@ class EngineService(service.Service):
         This could be used by CloudWatch and WaitConditions
         and treat HA service events like any other CloudWatch.
         '''
-        rule = watchrule.WatchRule.load(cnxt, watch_name)
-        rule.create_watch_data(stats_data)
-        logger.debug('new watch:%s data:%s' % (watch_name, str(stats_data)))
+        def get_matching_watches():
+            if watch_name:
+                yield watchrule.WatchRule.load(cnxt, watch_name)
+            else:
+                for wr in db_api.watch_rule_get_all(cnxt):
+                    if watchrule.rule_can_use_sample(wr, stats_data):
+                        yield watchrule.WatchRule.load(cnxt, watch=wr)
+
+        rule_run = False
+        for rule in get_matching_watches():
+            rule.create_watch_data(stats_data)
+            rule_run = True
+
+        if not rule_run:
+            if watch_name is None:
+                watch_name = 'Unknown'
+            raise exception.WatchRuleNotFound(watch_name=watch_name)
+
         return stats_data
 
     @request_context
@@ -721,6 +770,8 @@ class EngineService(service.Service):
         arg3 -> State (must be one defined in WatchRule class
         '''
         wr = watchrule.WatchRule.load(cnxt, watch_name)
+        if wr.state == rpc_api.WATCH_STATE_CEILOMETER_CONTROLLED:
+            return
         actions = wr.set_watch_state(state)
         for action in actions:
             self._start_in_thread(wr.stack_id, action)
