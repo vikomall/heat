@@ -120,21 +120,29 @@ class CloudWinServer(rackspace_resource.RackspaceResource):
         Create Rackspace Cloud DB Instance.
         '''
         logger.debug("Cloud DB instance handle_create called")
-        self.sqlinstancename = self.properties['InstanceName']
+        self.serverinstancename = self.properties['InstanceName']
         self.flavor = self.properties['FlavorRef']
         self.volume = self.properties['VolumeSize']
         self.databases = self.properties.get('Databases', None)
         self.users = self.properties.get('Users', None)
 
         # create db instance
-        logger.info("Creating Cloud DB instance %s" % self.sqlinstancename)
+        logger.info("Creating Windows cloud server")
         import pdb
         pdb.set_trace()
+        data = 'netsh advfirewall firewall add rule name="Port 445"' \
+            ' dir=in action=allow protocol=TCP localport=445'
+
+        files = {"C:\\cloud-automation\\bootstrap.bat": data,
+                 "C:\\cloud-automation\\bootstrap.cmd": data,
+                 "C:\\rs-automation\\bootstrap.bat": data,
+                 "C:\\rs-automation\\bootstrap.cmd": data}
         image = [im for im in self.nova().images.list() if im.name == "heat-windows-image1"][0]
         memory = [mem for mem in self.nova().flavors.list() if mem.ram == 2048][0]
-        instance = self.nova().servers.create(self.sqlinstancename,
+        instance = self.nova().servers.create(self.serverinstancename,
                                           image,
-                                          memory)
+                                          memory,
+                                          files = files)
         if instance is not None:
             self.resource_id_set(instance.id)
 
@@ -152,8 +160,8 @@ class CloudWinServer(rackspace_resource.RackspaceResource):
         if instance.status != 'ACTIVE':
             return False
 
-        logger.info("Cloud DB instance %s created (flavor:%s, volume:%s)" %
-                    (self.sqlinstancename, self.flavor, self.volume))
+        logger.info("Cloud Windows server %s created (flavor:%s, volume:%s)" %
+                    (self.serverinstancename, self.flavor, self.volume))
         
         # Now ssh to the server and install the required components
         ssh_client = paramiko.SSHClient()
@@ -175,10 +183,10 @@ class CloudWinServer(rackspace_resource.RackspaceResource):
         Delete a Rackspace Cloud DB Instance.
         '''
         logger.debug("CloudDBInstance handle_delete called.")
-        sqlinstancename = self.properties['InstanceName']
+        serverinstancename = self.properties['InstanceName']
         if self.resource_id is None:
             logger.debug("resource_id is null and returning without delete.")
-            raise exception.ResourceNotFound(resource_name=sqlinstancename,
+            raise exception.ResourceNotFound(resource_name=serverinstancename,
                                              stack_name=self.stack.name)
         instances = self.nova().servers.get(self.resource_id)
         import pdb
