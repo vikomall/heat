@@ -1,0 +1,46 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: |
+  HEAT template for creating Windows server on  Rackspace Cloud
+
+Parameters:
+
+  name:
+    Default: HeatTestResource
+    Description: Windows Server Name
+    Type: String
+    MinLength: 1
+    MaxLength: 64
+    AllowedPattern: "[a-zA-Z][a-zA-Z0-9]*"
+    ConstraintDescription: must begin with a letter and contain only alphanumeric characters.
+
+  image:
+    Description : Windows Server Image
+    Type: String
+    Default: Windows Server 2012
+
+  memory: 
+    Description : Windows Server memory(RAM) in MB
+    Type: Number
+    Default: 2048
+
+
+Resources:
+
+  RSWindowsServer:
+    Type: "Rackspace::Cloud::CloudWinServer"
+    Properties:
+      name:
+        Ref: name
+      memory:
+        Ref: memory
+      image:
+        Ref: image
+
+Outputs:
+
+  PublicIp:
+    Value: { "Fn::GetAtt" : [ "RSWindowsServer", "PublicIp" ] }
+    Description: public IP of the windows server
+
+
