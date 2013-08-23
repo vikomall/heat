@@ -13,7 +13,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import paramiko
+#import paramiko
 
 from heat.common import exception
 from heat.engine.resources.rackspace import rackspace_resource
@@ -24,112 +24,95 @@ logger = logging.getLogger(__name__)
 
 class CloudWinServer(rackspace_resource.RackspaceResource):
     '''
-    Rackspace cloud database resource.
+    Rackspace cloud Windows server resource.
     '''
-    database_schema = {
-        "Character_set": {
-            "Type": "String",
-            "Default": "utf8",
-            "Required": False
-        },
-        "Collate": {
-            "Type": "String",
-            "Default": "utf8_general_ci",
-            "Required": False
-        },
-        "Name": {
-            "Type": "String",
-            "Required": True,
-            "MaxLength": "64",
-            "AllowedPattern": "[a-zA-Z0-9_]+[a-zA-Z0-9_@?#\s]*[a-zA-Z0-9_]+"
-        }
-    }
-
-    user_schema = {
-        "Name": {
-            "Type": "String",
-            "Required": True,
-            "MaxLength": "16",
-            "AllowedPattern": "[a-zA-Z0-9_]+[a-zA-Z0-9_@?#\s]*[a-zA-Z0-9_]+"
-        },
-        "Password": {
-            "Type": "String",
-            "Required": True,
-            "AllowedPattern": "[a-zA-Z0-9_]+[a-zA-Z0-9_@?#\s]*[a-zA-Z0-9_]+"
-        },
-        "Host": {
-            "Type": "String",
-            "Default": "%"
-        },
-        "Databases": {
-            "Type": "List",
-            "Required": True
-        }
-    }
-
     properties_schema = {
-        "InstanceName": {
-            "Type": "String",
-            "Required": True,
-            "MaxLength": "255"
-        },
-
-        "FlavorRef": {
-            "Type": "String",
-            "Required": True
-        },
-
-        "VolumeSize": {
-            "Type": "Number",
-            "MinValue": 1,
-            "MaxValue": 150,
-            "Required": True
-        },
-
-        "Databases": {
-            'Type': 'List',
-            'Required': False,
-            'Schema': {
-                'Type': 'Map',
-                'Schema': database_schema
-            }
-        },
-
-        "Users": {
-            'Type': 'List',
-            'Required': False,
-            'Schema': {
-                'Type': 'Map',
-                'Schema': user_schema
-            }
-        },
+        'memory': {
+            'Type': 'Number', 
+            'Default': 2048
+            },
+        
+        'image': {
+            'Type': 'String',
+            'Default': 'Windows Server 2012'
+            },
+        
+        'name': {
+            'Type': 'String',
+            'Default': 'WindowsServer'
+        }
     }
 
-    attributes_schema = {
-        "hostname": "Hostname of the instance",
-        "href": "Api endpoint reference of the instance"
-    }
+    attributes_schema = {'PrivateDnsName': ('Private DNS name of the specified'
+                                            ' instance.'),
+                         'PublicDnsName': ('Public DNS name of the specified '
+                                           'instance.'),
+                         'PrivateIp': ('Private IP address of the specified '
+                                       'instance.'),
+                         'PublicIp': ('Public IP address of the specified '
+                                      'instance.')}
 
     def __init__(self, name, json_snippet, stack):
         super(CloudWinServer, self).__init__(name, json_snippet, stack)
-        self.hostname = None
-        self.href = None
+        self._private_ip = None
+        self._public_ip = None
+        self._server = None
+
+    @property
+    def server(self):
+        if not self._server:
+            logger.debug("Calling nova().servers.get()")
+            self._server = self.nova().servers.get(self.resource_id)
+        return self._server
+
+    def _get_ip(self, ip_type):
+        if ip_type in self.server.addresses:
+            for ip in self.server.addresses[ip_type]:
+                if ip['version'] == 4:
+                    return ip['addr']
+
+        raise exception.Error("Could not determine the %s IP of %s." %
+                              (ip_type, self.properties['image']))
+
+    @property
+    def public_ip(self):
+        """Return the public IP of the Cloud Server."""
+        if not self._public_ip:
+            self._public_ip = self._get_ip('public')
+
+        return self._public_ip
+
+    @property
+    def private_ip(self):
+        """Return the private IP of the Cloud Server."""
+        if not self._private_ip:
+            self._private_ip = self._get_ip('private')
+    
+        return self._private_ip
+
+    @property
+    def images(self):
+        """Get the images from the API."""
+        logger.debug("Calling nova().images.list()")
+        return [im.name for im in self.nova().images.list()]
+    
+    @property
+    def flavors(self):
+        """Get the flavors from the API."""
+        logger.debug("Calling nova().flavors.list()")
+        return [flavor.ram for flavor in self.nova().flavors.list()]
 
     def handle_create(self):
         '''
-        Create Rackspace Cloud DB Instance.
+        Create Rackspace Cloud Windows Server Instance.
         '''
-        logger.debug("Cloud DB instance handle_create called")
-        self.serverinstancename = self.properties['InstanceName']
-        self.flavor = self.properties['FlavorRef']
-        self.volume = self.properties['VolumeSize']
-        self.databases = self.properties.get('Databases', None)
-        self.users = self.properties.get('Users', None)
+        logger.debug("CloudWinServer instance handle_create called")
+        serverinstancename = self.properties['name']
+        memory = self.properties['memory']
+        image = self.properties['image']
 
-        # create db instance
+        # create Windows server instance
         logger.info("Creating Windows cloud server")
-        import pdb
-        pdb.set_trace()
         data = 'netsh advfirewall firewall add rule name="Port 445"' \
             ' dir=in action=allow protocol=TCP localport=445'
 
@@ -137,11 +120,13 @@ class CloudWinServer(rackspace_resource.RackspaceResource):
                  "C:\\cloud-automation\\bootstrap.cmd": data,
                  "C:\\rs-automation\\bootstrap.bat": data,
                  "C:\\rs-automation\\bootstrap.cmd": data}
-        image = [im for im in self.nova().images.list() if im.name == "heat-windows-image1"][0]
-        memory = [mem for mem in self.nova().flavors.list() if mem.ram == 2048][0]
-        instance = self.nova().servers.create(self.serverinstancename,
-                                          image,
-                                          memory,
+        imageRef = [im for im in self.nova().images.list()                    
+                    if im.name == image][0]
+        flavorRef = [flavor for flavor in self.nova().flavors.list()
+                     if flavor.ram == int(memory)][0]
+        instance = self.nova().servers.create(serverinstancename,
+                                          imageRef,
+                                          flavorRef,
                                           files = files)
         if instance is not None:
             self.resource_id_set(instance.id)
@@ -150,48 +135,39 @@ class CloudWinServer(rackspace_resource.RackspaceResource):
 
     def check_create_complete(self, instance):
         '''
-        Check if cloud DB instance creation is complete.
+        Check if cloud Windows server instance creation is complete.
         '''
         instance.get()  # get updated attributes
         if instance.status == 'ERROR':
             instance.delete()
-            raise exception.Error("Cloud DB instance creation failed.")
+            raise exception.Error("CloudWinServer instance creation failed.")
 
         if instance.status != 'ACTIVE':
             return False
 
-        logger.info("Cloud Windows server %s created (flavor:%s, volume:%s)" %
-                    (self.serverinstancename, self.flavor, self.volume))
+        logger.info("Cloud Windows server %s created (flavor:%s, image:%s)" %
+                    (instance.name,
+                     instance.flavor['id'],
+                     instance.image['id']))
         
-        # Now ssh to the server and install the required components
-        ssh_client = paramiko.SSHClient()
-        username = "Administrator"
-        password = instance.adminPass
-        public_ip = [addr['addr'] for addr in instance.addresses['public'] if addr['version']== 4][0]
-        ssh_client.connect(public_ip, username=username, password=password)
-        command = '"c:/program files/microsoft/Web Platform Installer/webpicmd.exe" /Install /Application: DasBlog /AcceptEula /IISExpress'
+        adminPass = instance.adminPass
         
-        stdin, stdout, stderr = ssh_client.exec_command(command)
-        import pdb
-        pdb.set_trace()
-        logger.debug(stdout.read())
-        logger.debug(stderr.read())        
+        # Now connect to server using impacket and install required components
+        #from heat.engine import psexec
+        #psexec.PSEXEC('cmd.exe', 'c:\\windows\\system32\\' '445/SMB', 'administrator', adminPass)
+        
         return True
 
     def handle_delete(self):
         '''
-        Delete a Rackspace Cloud DB Instance.
+        Delete a Rackspace Cloud Windows Server Instance.
         '''
-        logger.debug("CloudDBInstance handle_delete called.")
-        serverinstancename = self.properties['InstanceName']
+        logger.debug("CloudWinServer handle_delete called.")
         if self.resource_id is None:
-            logger.debug("resource_id is null and returning without delete.")
-            raise exception.ResourceNotFound(resource_name=serverinstancename,
-                                             stack_name=self.stack.name)
-        instances = self.nova().servers.get(self.resource_id)
-        import pdb
-        pdb.set_trace()
-        instances.delete()
+            return
+
+        instance = self.nova().servers.get(self.resource_id)
+        instance.delete()
         self.resource_id = None
 
     def validate(self):
@@ -202,58 +178,19 @@ class CloudWinServer(rackspace_resource.RackspaceResource):
         if res:
             return res
 
-        # check validity of user and databases
-        users = self.properties.get('Users', None)
-        if not users:
-            return
-
-        databases = self.properties.get('Databases', None)
-        if not databases:
-            return {'Error':
-                    'Databases property is required if Users property'
-                    ' is provided'}
-
-        for user in users:
-            if not user['Databases']:
-                return {'Error':
-                        'Must provide access to at least one database for '
-                        'user %s' % user['Name']}
-
-            missing_db = [db_name for db_name in user['Databases']
-                          if db_name not in [db['Name'] for db in databases]]
-            if missing_db:
-                return {'Error':
-                        'Database %s specified for user does not exist in '
-                        'databases.' % missing_db}
-        return
-
-    def _hostname(self):
-        if self.hostname is None and self.resource_id is not None:
-            dbinstance = self.cloud_db().get(self.resource_id)
-            self.hostname = dbinstance.hostname
-
-        return self.hostname
-
-    def _href(self):
-        if self.href is None and self.resource_id is not None:
-            dbinstance = self.cloud_db().get(self.resource_id)
-            self.href = self._gethref(dbinstance)
-
-        return self.href
-
-    def _gethref(self, dbinstance):
-        if dbinstance is None or dbinstance.links is None:
-            return None
-
-        for link in dbinstance.links:
-            if link['rel'] == 'self':
-                return link['href']
+        # check validity of given image
+        if self.properties['image'] not in self.images:
+            return {'Error': 'Image not found.'}
+        
+        # check validity of gvien memory
+        if int(self.properties['memory']) not in self.flavors:
+            return {'Error': 'Memory flavor not found.'}
 
     def _resolve_attribute(self, name):
-        if name == 'hostname':
-            return self._hostname()
-        elif name == 'href':
-            return self._href()
+        if name == 'PrivateIp':
+            return self.private_ip()
+        elif name == 'PublicIp':
+            return self.public_ip()
         else:
             return None
 
