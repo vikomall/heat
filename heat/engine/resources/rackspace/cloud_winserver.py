@@ -188,9 +188,9 @@ class CloudWinServer(rackspace_resource.RackspaceResource):
 
     def _resolve_attribute(self, name):
         if name == 'PrivateIp':
-            return self.private_ip()
+            return self.private_ip
         elif name == 'PublicIp':
-            return self.public_ip()
+            return self.public_ip
         else:
             return None
 
