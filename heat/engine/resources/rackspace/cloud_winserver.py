@@ -13,13 +13,82 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-#import paramiko
+import signal
+import subprocess
+import os
+import shlex
+import socket
+import time
+import tempfile
 
 from heat.common import exception
 from heat.engine.resources.rackspace import rackspace_resource
 from heat.openstack.common import log as logging
 
 logger = logging.getLogger(__name__)
+
+def alarm_handler(signum, frame):
+    raise Alarm
+
+
+def run_command(cmd, lines=None, timeout=None):
+    p = subprocess.Popen(shlex.split(cmd),
+                         close_fds=True,
+                         stdin=subprocess.PIPE,
+                         stdout=subprocess.PIPE,
+                         stderr=subprocess.STDOUT)
+
+    signal.signal(signal.SIGALRM, alarm_handler)
+    if timeout:
+        signal.alarm(timeout)
+
+    try:
+        if lines:
+            (stdout, stderr) = p.communicate(input=lines)
+
+        status = p.wait()
+        signal.alarm(0)
+    except Alarm:
+        logger.warning("Timeout running post-build process")
+        status = 1
+        stdout = ''
+        p.kill()
+
+    if lines:
+        output = stdout
+
+        # Remove this cruft from Windows build output
+        output = output.replace('\x08', '')
+        output = output.replace('\r', '')
+
+    else:
+        output = p.stdout.read().strip()
+
+    return (status, output)
+
+def get_wrapper_batch_file(command):
+    batch_file_command = "powershell.exe -executionpolicy unrestricted " \
+        "-command .\%s" % command
+    batch_file = tempfile.NamedTemporaryFile(suffix=".bat", delete=False)
+    batch_file.write(batch_file_command)
+    batch_file.close()
+    return batch_file.name
+    
+    
+def psexec_run_script(username, password, address, filename,
+                      command, path="C:\\Windows"):
+    psexec = "%s/psexec.py" % os.path.dirname(__file__)
+    psscript = "%s/download_wpi.ps1" % os.path.dirname(__file__)
+    cmd_string = "nice python %s -path '%s' '%s':'%s'@'%s' " \
+             "'c:\\windows\\sysnative\\cmd'"
+    cmd = cmd_string % (psexec, path, username, password, address)
+
+    # create a batch file that launches given powershell script
+    wrapper_batch_file = get_wrapper_batch_file(command)
+    lines = "put %s\nput %s\n%s\nexit\n" % (filename, wrapper_batch_file, os.path.basename(wrapper_batch_file))
+
+    timeout_msg = "Port 445 never opened up after 5 minutes"
+    return run_command(cmd, lines=lines, timeout=1800)
 
 
 class CloudWinServer(rackspace_resource.RackspaceResource):
@@ -40,7 +109,12 @@ class CloudWinServer(rackspace_resource.RackspaceResource):
         'name': {
             'Type': 'String',
             'Default': 'WindowsServer'
-        }
+            },
+        
+        'user_data': {
+            'Type': 'String',
+            'Default': 'None'
+            }
     }
 
     attributes_schema = {'PrivateDnsName': ('Private DNS name of the specified'
@@ -152,9 +226,29 @@ class CloudWinServer(rackspace_resource.RackspaceResource):
         
         adminPass = instance.adminPass
         
-        # Now connect to server using impacket and install required components
-        #from heat.engine import psexec
-        #psexec.PSEXEC('cmd.exe', 'c:\\windows\\system32\\' '445/SMB', 'administrator', adminPass)
+        user_data = self.properties['user_data']
+        # create powershell script with user_data
+        powershell_script = tempfile.NamedTemporaryFile(suffix=".ps1",
+                                                        delete=False)
+        
+        for line in user_data.split("\\n"):
+            powershell_script.write(line+"\n")
+        powershell_script.seek(0)
+        script_name = powershell_script.name
+        powershell_script.close()
+
+        # TODO: fix this sleep issue
+        time.sleep(8*60)
+        # Now connect to server using impacket and do the following
+        # 1. copy powershell script to remote server
+        # 2. execute the script
+        # 3. close the connection (exit)
+        (status, output) = psexec_run_script('Administrator',
+                                             adminPass,
+                                             self.public_ip,
+                                             script_name,
+                                             os.path.basename(script_name))
+        # TODO: remove the powershell script
         
         return True
 
