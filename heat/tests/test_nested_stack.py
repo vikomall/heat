@@ -13,6 +13,8 @@
 #    under the License.
 
 
+import copy
+
 from heat.common import exception
 from heat.common import template_format
 from heat.common import urlfetch
@@ -32,7 +34,7 @@ Resources:
   the_nested:
     Type: AWS::CloudFormation::Stack
     Properties:
-      TemplateURL: https://localhost/the.template
+      TemplateURL: https://server.test/the.template
       Parameters:
         KeyName: foo
 '''
@@ -45,6 +47,16 @@ Parameters:
 Outputs:
   Foo:
     Value: bar
+'''
+
+    update_template = '''
+HeatTemplateFormatVersion: '2012-12-12'
+Parameters:
+  KeyName:
+    Type: String
+Outputs:
+  Bar:
+    Value: foo
 '''
 
     def setUp(self):
@@ -67,9 +79,9 @@ Outputs:
         stack.store()
         return stack
 
-    def test_nested_stack(self):
-        urlfetch.get('https://localhost/the.template').AndReturn(
-            self.nested_template)
+    def test_nested_stack_create(self):
+        urlfetch.get('https://server.test/the.template').MultipleTimes().\
+            AndReturn(self.nested_template)
         self.m.ReplayAll()
 
         stack = self.create_stack(self.test_template)
@@ -79,9 +91,6 @@ Outputs:
         arn_prefix = ('arn:openstack:heat::aaaa:stacks/%s/' %
                       rsrc.physical_resource_name())
         self.assertTrue(rsrc.FnGetRefId().startswith(arn_prefix))
-
-        self.assertRaises(resource.UpdateReplace,
-                          rsrc.handle_update, {}, {}, {})
 
         self.assertEqual('bar', rsrc.FnGetAtt('Outputs.Foo'))
         self.assertRaises(
@@ -96,8 +105,47 @@ Outputs:
 
         self.m.VerifyAll()
 
+    def test_nested_stack_update(self):
+        urlfetch.get('https://server.test/the.template').MultipleTimes().\
+            AndReturn(self.nested_template)
+        urlfetch.get('https://server.test/new.template').MultipleTimes().\
+            AndReturn(self.update_template)
+
+        self.m.ReplayAll()
+
+        stack = self.create_stack(self.test_template)
+        rsrc = stack['the_nested']
+
+        original_nested_id = rsrc.resource_id
+        t = template_format.parse(self.test_template)
+        new_res = copy.deepcopy(t['Resources']['the_nested'])
+        new_res['Properties']['TemplateURL'] = (
+            'https://server.test/new.template')
+        prop_diff = {'TemplateURL': 'https://server.test/new.template'}
+        rsrc.handle_update(new_res, {}, prop_diff)
+
+        # Expect the physical resource name staying the same after update,
+        # so that the nested was actually updated instead of replaced.
+        self.assertEqual(original_nested_id, rsrc.resource_id)
+        db_nested = db_api.stack_get(stack.context,
+                                     rsrc.resource_id)
+        # Owner_id should be preserved during the update process.
+        self.assertEqual(stack.id, db_nested.owner_id)
+
+        self.assertEqual('foo', rsrc.FnGetAtt('Outputs.Bar'))
+        self.assertRaises(
+            exception.InvalidTemplateAttribute, rsrc.FnGetAtt, 'Foo')
+        self.assertRaises(
+            exception.InvalidTemplateAttribute, rsrc.FnGetAtt, 'Outputs.Foo')
+        self.assertRaises(
+            exception.InvalidTemplateAttribute, rsrc.FnGetAtt, 'Bar')
+
+        rsrc.delete()
+
+        self.m.VerifyAll()
+
     def test_nested_stack_suspend_resume(self):
-        urlfetch.get('https://localhost/the.template').AndReturn(
+        urlfetch.get('https://server.test/the.template').AndReturn(
             self.nested_template)
         self.m.ReplayAll()
 
@@ -111,6 +159,166 @@ Outputs:
         self.assertEqual(rsrc.state, (rsrc.RESUME, rsrc.COMPLETE))
 
         rsrc.delete()
+        self.m.VerifyAll()
+
+    def test_nested_stack_three_deep(self):
+        root_template = '''
+HeatTemplateFormat: 2012-12-12
+Resources:
+    Nested:
+        Type: AWS::CloudFormation::Stack
+        Properties:
+            TemplateURL: 'https://server.test/depth1.template'
+'''
+        depth1_template = '''
+HeatTemplateFormat: 2012-12-12
+Resources:
+    Nested:
+        Type: AWS::CloudFormation::Stack
+        Properties:
+            TemplateURL: 'https://server.test/depth2.template'
+'''
+        depth2_template = '''
+HeatTemplateFormat: 2012-12-12
+Resources:
+    Nested:
+        Type: AWS::CloudFormation::Stack
+        Properties:
+            TemplateURL: 'https://server.test/depth3.template'
+            Parameters:
+                KeyName: foo
+'''
+        urlfetch.get(
+            'https://server.test/depth1.template').AndReturn(
+                depth1_template)
+        urlfetch.get(
+            'https://server.test/depth2.template').AndReturn(
+                depth2_template)
+        urlfetch.get(
+            'https://server.test/depth3.template').AndReturn(
+                self.nested_template)
+        self.m.ReplayAll()
+        self.create_stack(root_template)
+        self.m.VerifyAll()
+
+    def test_nested_stack_four_deep(self):
+        root_template = '''
+HeatTemplateFormat: 2012-12-12
+Resources:
+    Nested:
+        Type: AWS::CloudFormation::Stack
+        Properties:
+            TemplateURL: 'https://server.test/depth1.template'
+'''
+        depth1_template = '''
+HeatTemplateFormat: 2012-12-12
+Resources:
+    Nested:
+        Type: AWS::CloudFormation::Stack
+        Properties:
+            TemplateURL: 'https://server.test/depth2.template'
+'''
+        depth2_template = '''
+HeatTemplateFormat: 2012-12-12
+Resources:
+    Nested:
+        Type: AWS::CloudFormation::Stack
+        Properties:
+            TemplateURL: 'https://server.test/depth3.template'
+'''
+        depth3_template = '''
+HeatTemplateFormat: 2012-12-12
+Resources:
+    Nested:
+        Type: AWS::CloudFormation::Stack
+        Properties:
+            TemplateURL: 'https://server.test/depth4.template'
+            Parameters:
+                KeyName: foo
+'''
+        urlfetch.get(
+            'https://server.test/depth1.template').AndReturn(
+                depth1_template)
+        urlfetch.get(
+            'https://server.test/depth2.template').AndReturn(
+                depth2_template)
+        urlfetch.get(
+            'https://server.test/depth3.template').AndReturn(
+                depth3_template)
+        urlfetch.get(
+            'https://server.test/depth4.template').AndReturn(
+                self.nested_template)
+        self.m.ReplayAll()
+        t = template_format.parse(root_template)
+        stack = self.parse_stack(t)
+        stack.create()
+        self.assertEquals((stack.CREATE, stack.FAILED), stack.state)
+        self.assertIn('Recursion depth exceeds', stack.status_reason)
+        self.m.VerifyAll()
+
+    def test_nested_stack_four_wide(self):
+        root_template = '''
+HeatTemplateFormat: 2012-12-12
+Resources:
+    Nested:
+        Type: AWS::CloudFormation::Stack
+        Properties:
+            TemplateURL: 'https://server.test/depth1.template'
+            Parameters:
+                KeyName: foo
+    Nested2:
+        Type: AWS::CloudFormation::Stack
+        Properties:
+            TemplateURL: 'https://server.test/depth2.template'
+            Parameters:
+                KeyName: foo
+    Nested3:
+        Type: AWS::CloudFormation::Stack
+        Properties:
+            TemplateURL: 'https://server.test/depth3.template'
+            Parameters:
+                KeyName: foo
+    Nested4:
+        Type: AWS::CloudFormation::Stack
+        Properties:
+            TemplateURL: 'https://server.test/depth4.template'
+            Parameters:
+                KeyName: foo
+'''
+        urlfetch.get(
+            'https://server.test/depth1.template').InAnyOrder().AndReturn(
+                self.nested_template)
+        urlfetch.get(
+            'https://server.test/depth2.template').InAnyOrder().AndReturn(
+                self.nested_template)
+        urlfetch.get(
+            'https://server.test/depth3.template').InAnyOrder().AndReturn(
+                self.nested_template)
+        urlfetch.get(
+            'https://server.test/depth4.template').InAnyOrder().AndReturn(
+                self.nested_template)
+        self.m.ReplayAll()
+        self.create_stack(root_template)
+        self.m.VerifyAll()
+
+    def test_nested_stack_infinite_recursion(self):
+        template = '''
+HeatTemplateFormat: 2012-12-12
+Resources:
+    Nested:
+        Type: AWS::CloudFormation::Stack
+        Properties:
+            TemplateURL: 'https://server.test/the.template'
+'''
+        urlfetch.get(
+            'https://server.test/the.template').MultipleTimes().AndReturn(
+                template)
+        self.m.ReplayAll()
+        t = template_format.parse(template)
+        stack = self.parse_stack(t)
+        stack.create()
+        self.assertEqual(stack.state, (stack.CREATE, stack.FAILED))
+        self.assertIn('Recursion depth exceeds', stack.status_reason)
         self.m.VerifyAll()
 
 
@@ -139,7 +347,7 @@ Outputs:
         super(ResDataNestedStackTest, self).setUp()
 
     def test_res_data_delete(self):
-        urlfetch.get('https://localhost/the.template').AndReturn(
+        urlfetch.get('https://server.test/the.template').AndReturn(
             self.nested_template)
         self.m.ReplayAll()
         stack = self.create_stack(self.test_template)

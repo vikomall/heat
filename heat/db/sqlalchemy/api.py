@@ -144,6 +144,19 @@ def resource_data_set(resource, key, value, redact=False):
     return current
 
 
+def resource_exchange_stacks(context, resource_id1, resource_id2):
+    query = model_query(context, models.Resource)
+    session = query.session
+    session.begin()
+
+    res1 = query.get(resource_id1)
+    res2 = query.get(resource_id2)
+
+    res1.stack, res2.stack = res2.stack, res1.stack
+
+    session.commit()
+
+
 def resource_data_delete(resource, key):
     result = resource_data_get_by_key(resource.context, resource.id, key)
     result.delete()
@@ -226,14 +239,6 @@ def stack_update(context, stack_id, values):
     stack.update(values)
     stack.save(_session(context))
 
-    # When the raw_template ID changes, we delete the old template
-    # after storing the new template ID
-    if stack.raw_template_id != old_template_id:
-        session = Session.object_session(stack)
-        rt = raw_template_get(context, old_template_id)
-        session.delete(rt)
-        session.flush()
-
 
 def stack_delete(context, stack_id):
     s = stack_get(context, stack_id)
@@ -256,7 +261,6 @@ def user_creds_create(context):
     user_creds_ref = models.UserCreds()
     user_creds_ref.update(values)
     user_creds_ref.password = crypt.encrypt(values['password'])
-    user_creds_ref.aws_creds = crypt.encrypt(values['aws_creds'])
     user_creds_ref.save(_session(context))
     return user_creds_ref
 
@@ -267,7 +271,6 @@ def user_creds_get(user_creds_id):
     # or it can be committed back to the DB in decrypted form
     result = dict(db_result)
     result['password'] = crypt.decrypt(result['password'])
-    result['aws_creds'] = crypt.decrypt(result['aws_creds'])
     return result
 
 

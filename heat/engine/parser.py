@@ -34,7 +34,6 @@ from heat.db import api as db_api
 from heat.openstack.common import log as logging
 from heat.openstack.common.gettextutils import _
 
-from heat.common.exception import ServerError
 from heat.common.exception import StackValidationFailed
 
 logger = logging.getLogger(__name__)
@@ -70,11 +69,12 @@ class Stack(object):
         stack is already in the database.
         '''
 
-        if re.match("[a-zA-Z][a-zA-Z0-9_.-]*$", stack_name) is None:
-            raise ValueError(_('Invalid stack name %s'
-                               ' must contain only alphanumeric or '
-                               '\"_-.\" characters, must start with alpha'
-                               ) % stack_name)
+        if owner_id is None:
+            if re.match("[a-zA-Z][a-zA-Z0-9_.-]*$", stack_name) is None:
+                raise ValueError(_('Invalid stack name %s'
+                                   ' must contain only alphanumeric or '
+                                   '\"_-.\" characters, must start with alpha'
+                                   ) % stack_name)
 
         self.id = stack_id
         self.owner_id = owner_id
@@ -152,19 +152,17 @@ class Stack(object):
 
         return stack
 
-    def store(self):
+    def store(self, backup=False):
         '''
         Store the stack in the database and return its ID
         If self.id is set, we update the existing stack
         '''
-        new_creds = db_api.user_creds_create(self.context)
 
         s = {
-            'name': self.name,
+            'name': self._backup_name() if backup else self.name,
             'raw_template_id': self.t.store(self.context),
             'parameters': self.env.user_env_as_dict(),
             'owner_id': self.owner_id,
-            'user_creds_id': new_creds.id,
             'username': self.context.username,
             'tenant': self.context.tenant_id,
             'action': self.action,
@@ -176,12 +174,17 @@ class Stack(object):
         if self.id:
             db_api.stack_update(self.context, self.id, s)
         else:
+            new_creds = db_api.user_creds_create(self.context)
+            s['user_creds_id'] = new_creds.id
             new_s = db_api.stack_create(self.context, s)
             self.id = new_s.id
 
         self._set_param_stackid()
 
         return self.id
+
+    def _backup_name(self):
+        return '%s*' % self.name
 
     def identifier(self):
         '''
@@ -259,7 +262,7 @@ class Stack(object):
         for res in self:
             try:
                 result = res.validate()
-            except ServerError as ex:
+            except exception.Error as ex:
                 logger.exception(ex)
                 raise ex
             except Exception as ex:
@@ -356,6 +359,25 @@ class Stack(object):
         if callable(post_func):
             post_func()
 
+    def _backup_stack(self, create_if_missing=True):
+        '''
+        Get a Stack containing any in-progress resources from the previous
+        stack state prior to an update.
+        '''
+        s = db_api.stack_get_by_name(self.context, self._backup_name(),
+                                     owner_id=self.id)
+        if s is not None:
+            logger.debug('Loaded existing backup stack')
+            return self.load(self.context, stack=s)
+        elif create_if_missing:
+            prev = type(self)(self.context, self.name, self.t, self.env,
+                              owner_id=self.id)
+            prev.store(backup=True)
+            logger.debug('Created new backup stack')
+            return prev
+        else:
+            return None
+
     def update(self, newstack, action=UPDATE):
         '''
         Compare the current stack with newstack,
@@ -383,16 +405,20 @@ class Stack(object):
                                'State invalid for %s' % action)
                 return
 
-        current_env = self.env
-        self.env = newstack.env
-        self.parameters = newstack.parameters
-
         self.state_set(self.UPDATE, self.IN_PROGRESS,
                        'Stack %s started' % action)
 
+        oldstack = Stack(self.context, self.name, self.t, self.env)
+        backup_stack = self._backup_stack()
+
         try:
-            update_task = update.StackUpdate(self, newstack)
+            update_task = update.StackUpdate(self, newstack, backup_stack,
+                                             rollback=action == self.ROLLBACK)
             updater = scheduler.TaskRunner(update_task)
+
+            self.env = newstack.env
+            self.parameters = newstack.parameters
+
             try:
                 updater(timeout=self.timeout_secs())
             finally:
@@ -416,10 +442,11 @@ class Stack(object):
                 # If rollback is enabled, we do another update, with the
                 # existing template, so we roll back to the original state
                 if not self.disable_rollback:
-                    oldstack = Stack(self.context, self.name, self.t,
-                                     current_env)
                     self.update(oldstack, action=self.ROLLBACK)
                     return
+        else:
+            logger.debug('Deleting backup stack')
+            backup_stack.delete()
 
         self.state_set(action, stack_status, reason)
 
@@ -449,6 +476,14 @@ class Stack(object):
         self.state_set(action, self.IN_PROGRESS, 'Stack %s started' % action)
 
         failures = []
+
+        backup_stack = self._backup_stack(False)
+        if backup_stack is not None:
+            backup_stack.delete()
+            if backup_stack.status != backup_stack.COMPLETE:
+                errs = backup_stack.status_reason
+                failures.append('Error deleting backup resources: %s' % errs)
+
         for res in reversed(self):
             try:
                 res.destroy()
@@ -574,6 +609,7 @@ def resolve_runtime_data(template, resources, snippet):
                       functools.partial(template.resolve_attributes,
                                         resources=resources),
                       template.resolve_split,
+                      template.resolve_member_list_to_map,
                       template.resolve_select,
                       template.resolve_joins,
                       template.resolve_replace,

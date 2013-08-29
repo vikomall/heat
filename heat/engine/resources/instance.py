@@ -308,23 +308,19 @@ class Instance(resource.Resource):
                 volume_attach.start()
                 return volume_attach.done()
             elif server.status == 'ERROR':
-                fault = server.fault or {}
+                fault = getattr(server, 'fault', {})
                 message = fault.get('message', 'Unknown')
                 code = fault.get('code', 500)
-                delete = scheduler.TaskRunner(
-                    nova_utils.delete_server, server)
-                delete(wait_time=0.2)
-                exc = exception.Error(_("Build of server %(server)s failed: "
-                                        "%(message)s (%(code)s)") %
+                exc = exception.Error(_("Creation of server %(server)s "
+                                        "failed: %(message)s (%(code)s)") %
                                       dict(server=server.name,
                                            message=message,
                                            code=code))
                 raise exc
             else:
-                exc = exception.Error(_('Nova reported unexpected '
-                                        'instance[%(name)s] '
-                                        'status[%(status)s]') %
-                                      dict(name=self.name,
+                exc = exception.Error(_("Creation of server %(server)s failed "
+                                        "with unknown status: %(status)s") %
+                                      dict(server=server.name,
                                            status=server.status))
                 raise exc
         else:

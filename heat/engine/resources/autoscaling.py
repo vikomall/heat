@@ -15,10 +15,10 @@
 
 import copy
 
-from heat.common import exception
 from heat.engine import resource
 from heat.engine import signal_responder
 
+from heat.common import exception
 from heat.openstack.common import log as logging
 from heat.openstack.common import timeutils
 from heat.engine.properties import Properties
@@ -116,14 +116,14 @@ class InstanceGroup(stack_resource.StackResource):
     def get_instance_names(self):
         """Get a list of resource names of the instances in this InstanceGroup.
 
-        Deleted resources will be ignored.
+        Failed resources will be ignored.
         """
         return sorted(x.name for x in self.get_instances())
 
     def get_instances(self):
         """Get a set of all the instance resources managed by this group."""
         return [resource for resource in self.nested()
-                if resource.state[0] != resource.DELETE]
+                if resource.state[1] != resource.FAILED]
 
     def handle_create(self):
         """Create a nested stack and add the initial resources to it."""
@@ -137,14 +137,8 @@ class InstanceGroup(stack_resource.StackResource):
 
         If any instances failed to be created, delete them.
         """
-        try:
-            done = super(InstanceGroup, self).check_create_complete(task)
-        except exception.Error as exc:
-            for resource in self.nested():
-                if resource.state == ('CREATE', 'FAILED'):
-                    resource.destroy()
-            raise
-        if done and len(self.get_instances()):
+        done = super(InstanceGroup, self).check_create_complete(task)
+        if done:
             self._lb_reload()
         return done
 
@@ -200,6 +194,9 @@ class InstanceGroup(stack_resource.StackResource):
         instance_definition = copy.deepcopy(conf.t)
         instance_definition['Type'] = 'AWS::EC2::Instance'
         instance_definition['Properties']['Tags'] = self._tags()
+        if self.properties.get('VPCZoneIdentifier'):
+            instance_definition['Properties']['SubnetId'] = \
+                self.properties['VPCZoneIdentifier'][0]
         # resolve references within the context of this stack.
         fully_parsed = self.stack.resolve_runtime_data(instance_definition)
 
@@ -215,12 +212,12 @@ class InstanceGroup(stack_resource.StackResource):
         When shrinking, the newest instances will be removed.
         """
         new_template = self._create_template(new_capacity)
-        result = self.update_with_template(new_template, {})
-        for resource in self.nested():
-            if resource.state == ('CREATE', 'FAILED'):
-                resource.destroy()
-        self._lb_reload()
-        return result
+        try:
+            self.update_with_template(new_template, {})
+        finally:
+            # Reload the LB in any case, so it's only pointing at healthy
+            # nodes.
+            self._lb_reload()
 
     def _lb_reload(self):
         '''
@@ -233,11 +230,20 @@ class InstanceGroup(stack_resource.StackResource):
         if self.properties['LoadBalancerNames']:
             id_list = [inst.FnGetRefId() for inst in self.get_instances()]
             for lb in self.properties['LoadBalancerNames']:
-                self.stack[lb].json_snippet['Properties']['Instances'] = \
-                    id_list
+                lb_resource = self.stack[lb]
+                if 'Instances' in lb_resource.properties_schema:
+                    lb_resource.json_snippet['Properties']['Instances'] = (
+                        id_list)
+                elif 'members' in lb_resource.properties_schema:
+                    lb_resource.json_snippet['Properties']['members'] = (
+                        id_list)
+                else:
+                    raise exception.Error(
+                        "Unsupported resource '%s' in LoadBalancerNames" %
+                        (lb,))
                 resolved_snippet = self.stack.resolve_static_data(
-                    self.stack[lb].json_snippet)
-                self.stack[lb].update(resolved_snippet)
+                    lb_resource.json_snippet)
+                lb_resource.update(resolved_snippet)
 
     def FnGetRefId(self):
         return unicode(self.name)
@@ -276,6 +282,7 @@ class AutoScalingGroup(InstanceGroup, CooldownMixin):
                             'AllowedValues': ['EC2', 'ELB'],
                             'Implemented': False},
         'LoadBalancerNames': {'Type': 'List'},
+        'VPCZoneIdentifier': {'Type': 'List'},
         'Tags': {'Type': 'List', 'Schema': {'Type': 'Map',
                                             'Schema': tags_schema}}
     }
@@ -402,6 +409,20 @@ class AutoScalingGroup(InstanceGroup, CooldownMixin):
     def FnGetRefId(self):
         return unicode(self.name)
 
+    def validate(self):
+        res = super(AutoScalingGroup, self).validate()
+        if res:
+            return res
+
+        # TODO(pasquier-s): once Neutron is able to assign subnets to
+        # availability zones, it will be possible to specify multiple subnets.
+        # For now, only one subnet can be specified. The bug #1096017 tracks
+        # this issue.
+        if self.properties.get('VPCZoneIdentifier') and \
+                len(self.properties['VPCZoneIdentifier']) != 1:
+            raise exception.NotSupported(feature=_("Anything other than one "
+                                         "VPCZoneIdentifier"))
+
 
 class LaunchConfiguration(resource.Resource):
     tags_schema = {'Key': {'Type': 'String',
@@ -509,7 +530,10 @@ class ScalingPolicy(signal_responder.SignalResponder, CooldownMixin):
             return unicode(self._get_signed_url())
 
     def FnGetRefId(self):
-        return unicode(self.name)
+        if self.resource_id is not None:
+            return unicode(self._get_signed_url())
+        else:
+            return unicode(self.name)
 
 
 def resource_mapping():

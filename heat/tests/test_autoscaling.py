@@ -17,6 +17,8 @@ import copy
 
 import mox
 
+from testtools import skipIf
+
 from oslo.config import cfg
 
 from heat.common import template_format
@@ -24,14 +26,18 @@ from heat.common import exception
 from heat.engine.resources import autoscaling as asc
 from heat.engine.resources import loadbalancer
 from heat.engine.resources import instance
+from heat.engine.resources.neutron import loadbalancer as neutron_lb
 from heat.engine import parser
 from heat.engine import resource
 from heat.engine import scheduler
 from heat.engine.resource import Metadata
 from heat.openstack.common import timeutils
+from heat.openstack.common.importutils import try_import
 from heat.tests.common import HeatTestCase
 from heat.tests import fakes
 from heat.tests import utils
+
+neutronclient = try_import('neutronclient.v2_0.client')
 
 
 as_template = '''
@@ -180,7 +186,7 @@ class AutoScalingTest(HeatTestCase):
         properties['MinSize'] = '0'
         properties['MaxSize'] = '0'
         stack = utils.parse_stack(t, params=self.params)
-
+        self._stub_lb_reload(0)
         self.m.ReplayAll()
         rsrc = self.create_scaling_group(t, stack, 'WebServerGroup')
         self.assertEqual(None, rsrc.FnGetAtt("InstanceList"))
@@ -654,6 +660,59 @@ class AutoScalingTest(HeatTestCase):
         rsrc.delete()
         self.m.VerifyAll()
 
+    @skipIf(neutronclient is None, 'neutronclient unavailable')
+    def test_lb_reload_members(self):
+        t = template_format.parse(as_template)
+        t['Resources']['ElasticLoadBalancer'] = {
+            'Type': 'OS::Neutron::LoadBalancer',
+            'Properties': {
+                'protocol_port': 8080,
+                'pool_id': 'pool123'
+            }
+        }
+
+        expected = {
+            'Type': 'OS::Neutron::LoadBalancer',
+            'Properties': {
+                'protocol_port': 8080,
+                'pool_id': 'pool123',
+                'members': [u'WebServerGroup-0']}
+        }
+        self.m.StubOutWithMock(neutron_lb.LoadBalancer, 'update')
+        neutron_lb.LoadBalancer.update(expected).AndReturn(None)
+
+        now = timeutils.utcnow()
+        self._stub_meta_expected(now, 'ExactCapacity : 1')
+        self._stub_create(1)
+        self.m.ReplayAll()
+        stack = utils.parse_stack(t, params=self.params)
+        self.create_scaling_group(t, stack, 'WebServerGroup')
+
+        self.m.VerifyAll()
+
+    @skipIf(neutronclient is None, 'neutronclient unavailable')
+    def test_lb_reload_invalid_resource(self):
+        t = template_format.parse(as_template)
+        t['Resources']['ElasticLoadBalancer'] = {
+            'Type': 'AWS::EC2::Volume',
+            'Properties': {
+                'AvailabilityZone': 'nova'
+            }
+        }
+
+        self._stub_create(1)
+        self.m.ReplayAll()
+        stack = utils.parse_stack(t, params=self.params)
+        error = self.assertRaises(
+            exception.ResourceFailure,
+            self.create_scaling_group, t, stack, 'WebServerGroup')
+        self.assertEqual(
+            "Error: Unsupported resource 'ElasticLoadBalancer' in "
+            "LoadBalancerNames",
+            str(error))
+
+        self.m.VerifyAll()
+
     def test_scaling_group_adjust(self):
         t = template_format.parse(as_template)
         stack = utils.parse_stack(t, params=self.params)
@@ -721,7 +780,7 @@ class AutoScalingTest(HeatTestCase):
         self._stub_validate()
         self.m.ReplayAll()
 
-        rsrc.adjust(1)
+        self.assertRaises(Exception, rsrc.adjust, 1)
         self.assertEqual(['WebServerGroup-0'], rsrc.get_instance_names())
 
         self.m.VerifyAll()
@@ -1299,6 +1358,11 @@ class AutoScalingTest(HeatTestCase):
         self._stub_lb_reload(2)
         self._stub_meta_expected(now, 'ChangeInCapacity : 1', 2)
         self._stub_create(1)
+
+        self.m.StubOutWithMock(asc.ScalingPolicy, 'keystone')
+        asc.ScalingPolicy.keystone().MultipleTimes().AndReturn(
+            self.fc)
+
         self.m.ReplayAll()
 
         # Trigger alarm
@@ -1345,3 +1409,34 @@ class AutoScalingTest(HeatTestCase):
 
         rsrc.delete()
         self.m.VerifyAll()
+
+    def test_vpc_zone_identifier(self):
+        t = template_format.parse(as_template)
+        properties = t['Resources']['WebServerGroup']['Properties']
+        properties['VPCZoneIdentifier'] = ['xxxx']
+
+        stack = utils.parse_stack(t, params=self.params)
+
+        self._stub_lb_reload(1)
+        now = timeutils.utcnow()
+        self._stub_meta_expected(now, 'ExactCapacity : 1')
+        self._stub_create(1)
+        self.m.ReplayAll()
+
+        rsrc = self.create_scaling_group(t, stack, 'WebServerGroup')
+        instances = rsrc.get_instances()
+        self.assertEqual(1, len(instances))
+        self.assertEqual('xxxx', instances[0].properties['SubnetId'])
+
+        rsrc.delete()
+        self.m.VerifyAll()
+
+    def test_invalid_vpc_zone_identifier(self):
+        t = template_format.parse(as_template)
+        properties = t['Resources']['WebServerGroup']['Properties']
+        properties['VPCZoneIdentifier'] = ['xxxx', 'yyyy']
+
+        stack = utils.parse_stack(t, params=self.params)
+
+        self.assertRaises(exception.NotSupported, self.create_scaling_group, t,
+                          stack, 'WebServerGroup')

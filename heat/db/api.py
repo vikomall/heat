@@ -95,6 +95,10 @@ def resource_create(context, values):
     return IMPL.resource_create(context, values)
 
 
+def resource_exchange_stacks(context, resource_id1, resource_id2):
+    return IMPL.resource_exchange_stacks(context, resource_id1, resource_id2)
+
+
 def resource_get_all_by_stack(context, stack_id):
     return IMPL.resource_get_all_by_stack(context, stack_id)
 
@@ -113,8 +117,8 @@ def stack_get(context, stack_id, admin=False, show_deleted=False):
     return IMPL.stack_get(context, stack_id, admin, show_deleted=show_deleted)
 
 
-def stack_get_by_name(context, stack_name):
-    return IMPL.stack_get_by_name(context, stack_name)
+def stack_get_by_name(context, stack_name, owner_id=None):
+    return IMPL.stack_get_by_name(context, stack_name, owner_id=owner_id)
 
 
 def stack_get_all(context):

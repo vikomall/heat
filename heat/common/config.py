@@ -40,30 +40,9 @@ paste_deploy_opts = [
 
 
 service_opts = [
-    cfg.IntOpt('report_interval',
-               default=10,
-               help='seconds between nodes reporting state to datastore'),
     cfg.IntOpt('periodic_interval',
                default=60,
                help='seconds between running periodic tasks'),
-    cfg.StrOpt('ec2_listen',
-               default="0.0.0.0",
-               help='IP address for EC2 API to listen'),
-    cfg.IntOpt('ec2_listen_port',
-               default=8773,
-               help='port for ec2 api to listen'),
-    cfg.StrOpt('osapi_compute_listen',
-               default="0.0.0.0",
-               help='IP address for OpenStack API to listen'),
-    cfg.IntOpt('osapi_compute_listen_port',
-               default=8774,
-               help='list port for osapi compute'),
-    cfg.StrOpt('osapi_volume_listen',
-               default="0.0.0.0",
-               help='IP address for OpenStack Volume API to listen'),
-    cfg.IntOpt('osapi_volume_listen_port',
-               default=8776,
-               help='port for os volume api to listen'),
     cfg.StrOpt('heat_metadata_server_url',
                default="",
                help='URL of the Heat metadata server'),
@@ -81,7 +60,13 @@ service_opts = [
                help='Instance connection to cfn/cw API validate certs if ssl'),
     cfg.StrOpt('heat_stack_user_role',
                default="heat_stack_user",
-               help='Keystone role for heat template-defined users')]
+               help='Keystone role for heat template-defined users'),
+    cfg.IntOpt('max_template_size',
+               default=524288,
+               help='Maximum raw byte size of any template.'),
+    cfg.IntOpt('max_nested_stack_depth',
+               default=3,
+               help='Maximum depth allowed when using nested stacks.')]
 
 db_opts = [
     cfg.StrOpt('sql_connection',
@@ -120,8 +105,9 @@ auth_password_opts = [
                 help=_('Allow orchestration of multiple clouds')),
     cfg.ListOpt('allowed_auth_uris',
                 default=[],
-                help=_('Allowed targets for auth_uri when multi_cloud is '
-                       'enabled.  If empty, all targets will be allowed.'))]
+                help=_('Allowed keystone endpoints for auth_uri when '
+                       'multi_cloud is enabled. At least one endpoint needs '
+                       'to be specified.'))]
 
 cfg.CONF.register_opts(db_opts)
 cfg.CONF.register_opts(engine_opts)

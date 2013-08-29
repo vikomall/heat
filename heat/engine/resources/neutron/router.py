@@ -103,16 +103,14 @@ class RouterGateway(neutron.NeutronResource):
         for resource in self.stack.resources.itervalues():
             # depend on any RouterInterface in this template with the same
             # router_id as this router_id
-            if ((resource.type() == 'OS::Neutron::RouterInterface' or
-                resource.type() == 'OS::Quantum::RouterInterface') and
+            if (resource.has_interface('OS::Neutron::RouterInterface') and
                 resource.properties.get('router_id') ==
                     self.properties.get('router_id')):
                         deps += (self, resource)
             # depend on any subnet in this template with the same network_id
             # as this network_id, as the gateway implicitly creates a port
             # on that subnet
-            elif ((resource.type() == 'OS::Neutron::Subnet' or
-                  resource.type() == 'OS::Quantum::Subnet') and
+            elif (resource.has_interface('OS::Neutron::Subnet') and
                   resource.properties.get('network_id') ==
                     self.properties.get('network_id')):
                         deps += (self, resource)
@@ -143,7 +141,4 @@ def resource_mapping():
         'OS::Neutron::Router': Router,
         'OS::Neutron::RouterInterface': RouterInterface,
         'OS::Neutron::RouterGateway': RouterGateway,
-        'OS::Quantum::Router': Router,
-        'OS::Quantum::RouterInterface': RouterInterface,
-        'OS::Quantum::RouterGateway': RouterGateway,
     }

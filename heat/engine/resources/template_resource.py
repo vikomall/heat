@@ -15,12 +15,14 @@
 
 from requests import exceptions
 
+from heat.common import exception
 from heat.common import template_format
 from heat.common import urlfetch
 from heat.engine import attributes
 from heat.engine import environment
 from heat.engine import properties
 from heat.engine import stack_resource
+from heat.engine import template
 
 from heat.openstack.common import log as logging
 
@@ -43,24 +45,16 @@ class TemplateResource(stack_resource.StackResource):
             json_snippet['Type'],
             registry_type=environment.TemplateResourceInfo)
         self.template_name = tri.template_name
-
-        cri = stack.env.get_resource_info(
-            json_snippet['Type'],
-            registry_type=environment.ClassResourceInfo)
-
-        # if we're not overriding via the environment, mirror the template as
-        # a new resource
-        if cri is None or cri.get_class() == self.__class__:
-            self.properties_schema = (properties.Properties
-                .schema_from_params(self.parsed_nested.get('Parameters')))
-            self.attributes_schema = (attributes.Attributes
-                .schema_from_outputs(self.parsed_nested.get('Outputs')))
-        # otherwise we are overriding a resource type via the environment
-        # and should mimic that type
+        if tri.user_resource:
+            self.allowed_schemes = ('http', 'https')
         else:
-            cls_facade = cri.get_class()
-            self.properties_schema = cls_facade.properties_schema
-            self.attributes_schema = cls_facade.attributes_schema
+            self.allowed_schemes = ('http', 'https', 'file')
+
+        tmpl = template.Template(self.parsed_nested)
+        self.properties_schema = (properties.Properties
+            .schema_from_params(tmpl.param_schemata()))
+        self.attributes_schema = (attributes.Attributes
+            .schema_from_outputs(tmpl[template.OUTPUTS]))
 
         super(TemplateResource, self).__init__(name, json_snippet, stack)
 
@@ -78,7 +72,15 @@ class TemplateResource(stack_resource.StackResource):
             if val is not None:
                 # take a list and create a CommaDelimitedList
                 if v.type() == properties.LIST:
-                    val = ','.join(val)
+                    if isinstance(val[0], dict):
+                        flattened = []
+                        for (i, item) in enumerate(val):
+                            for (k, v) in iter(item.items()):
+                                mem_str = '.member.%d.%s=%s' % (i, k, v)
+                                flattened.append(mem_str)
+                        params[n] = ','.join(flattened)
+                    else:
+                        val = ','.join(val)
 
                 # for MAP, the JSON param takes either a collection or string,
                 # so just pass it on and let the param validate as appropriate
@@ -98,7 +100,8 @@ class TemplateResource(stack_resource.StackResource):
         t_data = self.stack.t.files.get(self.template_name)
         if not t_data and self.template_name.endswith((".yaml", ".template")):
             try:
-                t_data = urlfetch.get(self.template_name)
+                t_data = urlfetch.get(self.template_name,
+                                      allowed_schemes=self.allowed_schemes)
             except (exceptions.RequestException, IOError) as r_exc:
                 raise ValueError("Could not fetch remote template '%s': %s" %
                                  (self.template_name, str(r_exc)))
@@ -108,6 +111,47 @@ class TemplateResource(stack_resource.StackResource):
                 # Find a better way
                 self.stack.t.files[self.template_name] = t_data
         return t_data
+
+    def validate(self):
+        cri = self.stack.env.get_resource_info(
+            self.type(),
+            registry_type=environment.ClassResourceInfo)
+
+        # If we're using an existing resource type as a facade for this
+        # template, check for compatibility between the interfaces.
+        if cri is not None and not isinstance(self, cri.get_class()):
+            facade_cls = cri.get_class()
+            facade_schemata = properties.schemata(facade_cls.properties_schema)
+
+            for n, fs in facade_schemata.items():
+                if fs.required and n not in self.properties_schema:
+                    msg = ("Required property %s for facade %s "
+                           "missing in provider") % (n, self.type())
+                    raise exception.StackValidationFailed(message=msg)
+
+                ps = self.properties_schema.get(n)
+                if (n in self.properties_schema and
+                        (fs.type != ps.type)):
+                    # Type mismatch
+                    msg = ("Property %s type mismatch between facade %s (%s) "
+                           "and provider (%s)") % (n, self.type(),
+                                                   fs.type, ps.type)
+                    raise exception.StackValidationFailed(message=msg)
+
+            for n, ps in self.properties_schema.items():
+                if ps.required and n not in facade_schemata:
+                    # Required property for template not present in facade
+                    msg = ("Provider requires property %s "
+                           "unknown in facade %s") % (n, self.type())
+                    raise exception.StackValidationFailed(message=msg)
+
+            for attr in facade_cls.attributes_schema:
+                if attr not in self.attributes_schema:
+                    msg = ("Attribute %s for facade %s "
+                           "missing in provider") % (attr, self.type())
+                    raise exception.StackValidationFailed(message=msg)
+
+        return super(TemplateResource, self).validate()
 
     def handle_create(self):
         return self.create_with_template(self.parsed_nested,

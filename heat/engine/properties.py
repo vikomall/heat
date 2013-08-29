@@ -51,7 +51,8 @@ class Schema(collections.Mapping):
     Schema objects are serialisable to dictionaries following a superset of
     the HOT input Parameter schema using dict().
 
-    Serialises to JSON in the form:
+    Serialises to JSON in the form::
+
         {
             'type': 'list',
             'required': False
@@ -168,6 +169,7 @@ class Schema(collections.Mapping):
             ss = None
 
         return cls(data_type,
+                   description=schema_dict.get(DESCRIPTION),
                    default=schema_dict.get(DEFAULT),
                    schema=ss,
                    required=schema_dict.get(REQUIRED, False),
@@ -293,6 +295,14 @@ class Constraint(collections.Mapping):
     def __init__(self, description=None):
         self.description = description
 
+    def __str__(self):
+        def desc():
+            if self.description:
+                yield self.description
+            yield self._str()
+
+        return '\n'.join(desc())
+
     def validate(self, value):
         if not self._is_valid(value):
             if self.description:
@@ -331,7 +341,7 @@ class Range(Constraint):
     """
     Constrain values within a range.
 
-    Serialises to JSON as:
+    Serialises to JSON as::
 
         {
             'range': {'min': <min>, 'max': <max>},
@@ -351,6 +361,18 @@ class Range(Constraint):
         for param in (min, max):
             if not isinstance(param, (float, int, long, type(None))):
                 raise InvalidPropertySchemaError('min/max must be numeric')
+
+        if min is max is None:
+            raise InvalidPropertySchemaError('range must have min and/or max')
+
+    def _str(self):
+        if self.max is None:
+            fmt = _('The value must be at least %(min)s.')
+        elif self.min is None:
+            fmt = _('The value must be no greater than %(max)s.')
+        else:
+            fmt = _('The value must be in the range %(min)s to %(max)s.')
+        return fmt % self._constraint()
 
     def _err_msg(self, value):
         return '%s is out of range (min: %s, max: %s)' % (value,
@@ -384,7 +406,7 @@ class Length(Range):
     """
     Constrain the length of values within a range.
 
-    Serialises to JSON as:
+    Serialises to JSON as::
 
         {
             'length': {'min': <min>, 'max': <max>},
@@ -402,6 +424,15 @@ class Length(Range):
                 msg = 'min/max length must be integral'
                 raise InvalidPropertySchemaError(msg)
 
+    def _str(self):
+        if self.max is None:
+            fmt = _('The length must be at least %(min)s.')
+        elif self.min is None:
+            fmt = _('The length must be no greater than %(max)s.')
+        else:
+            fmt = _('The length must be in the range %(min)s to %(max)s.')
+        return fmt % self._constraint()
+
     def _err_msg(self, value):
         return 'length (%d) is out of range (min: %s, max: %s)' % (len(value),
                                                                    self.min,
@@ -415,7 +446,7 @@ class AllowedValues(Constraint):
     """
     Constrain values to a predefined set.
 
-    Serialises to JSON as:
+    Serialises to JSON as::
 
         {
             'allowed_values': [<allowed1>, <allowed2>, ...],
@@ -432,6 +463,10 @@ class AllowedValues(Constraint):
             raise InvalidPropertySchemaError('AllowedValues must be a list')
         self.allowed = tuple(allowed)
 
+    def _str(self):
+        allowed = ', '.join(str(a) for a in self.allowed)
+        return _('Allowed values: %s') % allowed
+
     def _err_msg(self, value):
         allowed = '[%s]' % ', '.join(str(a) for a in self.allowed)
         return '"%s" is not an allowed value %s' % (value, allowed)
@@ -447,7 +482,7 @@ class AllowedPattern(Constraint):
     """
     Constrain values to a predefined regular expression pattern.
 
-    Serialises to JSON as:
+    Serialises to JSON as::
 
         {
             'allowed_pattern': <pattern>,
@@ -462,6 +497,9 @@ class AllowedPattern(Constraint):
         self.pattern = pattern
         self.match = re.compile(pattern).match
 
+    def _str(self):
+        return _('Value must match pattern: %s') % self.pattern
+
     def _err_msg(self, value):
         return '"%s" does not match pattern "%s"' % (value, self.pattern)
 
@@ -474,13 +512,6 @@ class AllowedPattern(Constraint):
 
 
 class Property(object):
-
-    __param_type_map = {
-        parameters.STRING: STRING,
-        parameters.NUMBER: NUMBER,
-        parameters.COMMA_DELIMITED_LIST: LIST,
-        parameters.JSON: MAP
-    }
 
     def __init__(self, schema, name=None):
         self.schema = Schema.from_legacy(schema)
@@ -507,37 +538,6 @@ class Property(object):
             return int(value)
         except ValueError:
             return float(value)
-
-    @staticmethod
-    def schema_from_param(param):
-        """
-        Convert the param specification to a property schema definition
-
-        :param param: parameter definition
-        :return: a property schema definition for param
-        """
-        if parameters.TYPE not in param:
-            raise ValueError("Parameter does not define a type for conversion")
-        ret = {
-            TYPE: Property.__param_type_map.get(param.get(parameters.TYPE))
-        }
-        if parameters.DEFAULT in param:
-            ret.update({DEFAULT: param[parameters.DEFAULT]})
-        else:
-            ret.update({REQUIRED: "true"})
-        if parameters.ALLOWED_VALUES in param:
-            ret.update({ALLOWED_VALUES: param[parameters.ALLOWED_VALUES]})
-        if parameters.ALLOWED_PATTERN in param:
-            ret.update({ALLOWED_PATTERN: param[parameters.ALLOWED_PATTERN]})
-        if parameters.MAX_LENGTH in param:
-            ret.update({MAX_LENGTH: param[parameters.MAX_LENGTH]})
-        if parameters.MIN_LENGTH in param:
-            ret.update({MIN_LENGTH: param[parameters.MIN_LENGTH]})
-        if parameters.MAX_VALUE in param:
-            ret.update({MAX_VALUE: param[parameters.MAX_VALUE]})
-        if parameters.MIN_VALUE in param:
-            ret.update({MIN_VALUE: param[parameters.MIN_VALUE]})
-        return ret
 
     def _validate_integer(self, value):
         if value is None:
@@ -622,6 +622,16 @@ class Property(object):
         return value
 
 
+def schemata(schema_dicts):
+    """
+    Return a dictionary of Schema objects for the given dictionary of schemata.
+
+    The input schemata are converted from the legacy (dictionary-based) format
+    to Schema objects where necessary.
+    """
+    return dict((n, Schema.from_legacy(s)) for n, s in schema_dicts.items())
+
+
 class Properties(collections.Mapping):
 
     def __init__(self, schema, data, resolver=lambda d: d, parent_name=None):
@@ -643,7 +653,7 @@ class Properties(collections.Mapping):
         :returns: an equivalent properties schema for the specified params
         """
         if params_snippet:
-            return dict((k, Property.schema_from_param(v)) for k, v
+            return dict((n, Schema.from_parameter(p)) for n, p
                         in params_snippet.items())
         return {}
 
@@ -729,6 +739,7 @@ class Properties(collections.Mapping):
     @staticmethod
     def _schema_to_params_and_props(schema, params=None):
         '''Generates a default template based on the provided schema.
+        ::
 
         ex: input: schema = {'foo': {'Type': 'String'}}, params = {}
             output: {'foo': {'Ref': 'foo'}},
@@ -760,9 +771,8 @@ class Properties(collections.Mapping):
     def schema_to_parameters_and_properties(schema):
         '''Generates properties with params resolved for a resource's
         properties_schema.
+
         :param schema: A resource's properties_schema
-        :param explode_nested: True if a resource's nested properties schema
-            should be resolved.
         :returns: A tuple of params and properties dicts
         '''
         params = {}
