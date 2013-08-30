@@ -20,7 +20,7 @@ import sys
 import os
 import cmd
 
-from impacket import version
+#from impacket import version
 from impacket.smbconnection import *
 from impacket.dcerpc import dcerpc_v4, dcerpc, transport, svcctl, srvsvc
 from impacket.structure import Structure
@@ -430,7 +430,7 @@ class RemoteStdInPipe(Pipes):
 
 # Process command-line arguments.
 if __name__ == '__main__':
-    print version.BANNER
+    #print version.BANNER
 
     parser = argparse.ArgumentParser()
 
