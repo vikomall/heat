@@ -3,8 +3,8 @@ pycrypto>=2.6
 eventlet>=0.13.0
 greenlet>=0.3.2
 httplib2
-iso8601>=0.1.4
 impacket>=0.9.10
+iso8601>=0.1.4
 kombu>=2.4.8
 argparse
 lxml>=2.3
