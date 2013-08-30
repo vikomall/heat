@@ -1,7 +1,7 @@
 AWSTemplateFormatVersion: "2010-09-09"
 
 Description: |
-  HEAT template for creating Windows server on  Rackspace Cloud
+  HEAT template for installing Wordpress on Windows Server
 
 Parameters:
 
@@ -13,17 +13,26 @@ Parameters:
     MaxLength: 64
     AllowedPattern: "[a-zA-Z][a-zA-Z0-9]*"
     ConstraintDescription: must begin with a letter and contain only alphanumeric characters.
-
+    
   image:
     Description: Windows Server Image
     Type: String
     Default: Windows Server 2012 (with updates)
-
+  
   flavor:
     AllowedValues: ['1', '2', '3', '4', '5', '6', '7', '8']
     ConstraintDescription: must be a valid Rackspace Cloud Server flavor.
     Default: '4'
     Description: Rackspace Cloud Server flavor
+    Type: String
+  
+  DBName:
+    AllowedPattern: '[a-zA-Z][a-zA-Z0-9]*'
+    ConstraintDescription: must begin with a letter and contain only alphanumeric characters.
+    Default: wordpress
+    Description: The WordPress database name
+    MaxLength: 64
+    MinLength: 1
     Type: String
   
   DBPassword:
@@ -36,16 +45,11 @@ Parameters:
     Type: String
     Default: verybadpass_123
 
-  MySQLPassword:
-    Description: MySQL root password
-    Type: String
-    Default: verybadpass_123
-
 
 Resources:
 
   RSWindowsServer:
-    Type: "Rackspace::Cloud::CloudWinServer"
+    Type: "Rackspace::Cloud::WinServer"
     Properties:
       name:
         Ref: name
@@ -62,7 +66,7 @@ Resources:
                   "echo \"DBPassword[@]", { "Ref" : "DBPassword" }, "\" \"DBAdminPassword[@]", { "Ref" : "DBAdminPassword" }, "\" > test.app\n",
                   "$tmpprofile = $env:userprofile\n",
                   "$env:userprofile = \"c:\\users\\administrator\"\n",
-                  "Start-Process \"C:\\Program Files\\Microsoft\\Web Platform Installer\\WebPICMD.exe\"  -ArgumentList \"/Install /Application:Wordpress@test.app /MySQLPassword:", { "Ref" : "MySQLPassword" }, " /AcceptEULA /Log:.\\wpi.log\"  -NoNewWindow -Wait\n",
+                  "Start-Process \"C:\\Program Files\\Microsoft\\Web Platform Installer\\WebPICMD.exe\"  -ArgumentList \"/Install /Application:Wordpress@test.app /MySQLPassword:", { "Ref" : "DBAdminPassword" }, " /AcceptEULA /Log:.\\wpi.log\"  -NoNewWindow -Wait\n",
                   "$env:userprofile = $tmpprofile\n"
               ]]}}
 Outputs:
@@ -74,5 +78,4 @@ Outputs:
   WebsiteURL:
     Value: { "Fn::Join" : ["", ["http://", { "Fn::GetAtt" : [ "RSWindowsServer", "PublicIp" ]}, "/wordpress"]] }
     Description: URL for Wordpress wiki
-
 

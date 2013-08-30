@@ -27,6 +27,7 @@ from heat.openstack.common import log as logging
 
 logger = logging.getLogger(__name__)
 
+
 def alarm_handler(signum, frame):
     raise Alarm
 
@@ -66,6 +67,7 @@ def run_command(cmd, lines=None, timeout=None):
 
     return (status, output)
 
+
 def get_wrapper_batch_file(command):
     batch_file_command = "powershell.exe -executionpolicy unrestricted " \
         "-command .\%s" % command
@@ -73,14 +75,14 @@ def get_wrapper_batch_file(command):
     batch_file.write(batch_file_command)
     batch_file.close()
     return batch_file.name
-    
-    
+
+
 def psexec_run_script(username, password, address, filename,
                       command, path="C:\\Windows"):
     psexec = "%s/psexec.py" % os.path.dirname(__file__)
     psscript = "%s/download_wpi.ps1" % os.path.dirname(__file__)
     cmd_string = "nice python %s -path '%s' '%s':'%s'@'%s' " \
-             "'c:\\windows\\sysnative\\cmd'"
+        "'c:\\windows\\sysnative\\cmd'"
     cmd = cmd_string % (psexec, path, username, password, address)
 
     # create a batch file that launches given powershell script
@@ -91,7 +93,7 @@ def psexec_run_script(username, password, address, filename,
     return run_command(cmd, lines=lines, timeout=1800)
 
 
-class CloudWinServer(rackspace_resource.RackspaceResource):
+class WinServer(rackspace_resource.RackspaceResource):
     '''
     Rackspace cloud Windows server resource.
     '''
@@ -99,22 +101,22 @@ class CloudWinServer(rackspace_resource.RackspaceResource):
         'name': {
             'Type': 'String',
             'Default': 'MyWindowsServer'
-            },
+        },
 
         'flavor': {
             'Type': 'String',
-            'Required': True            
-            },
-        
+            'Required': True
+        },
+
         'image': {
             'Type': 'String',
             'Default': 'Windows Server 2012 (with updates)'
-            },
-        
+        },
+
         'user_data': {
             'Type': 'String',
             'Default': 'None'
-            }
+        }
     }
 
     attributes_schema = {'PrivateDnsName': ('Private DNS name of the specified'
@@ -127,7 +129,7 @@ class CloudWinServer(rackspace_resource.RackspaceResource):
                                       'instance.')}
 
     def __init__(self, name, json_snippet, stack):
-        super(CloudWinServer, self).__init__(name, json_snippet, stack)
+        super(WinServer, self).__init__(name, json_snippet, stack)
         self._private_ip = None
         self._public_ip = None
         self._server = None
@@ -161,7 +163,7 @@ class CloudWinServer(rackspace_resource.RackspaceResource):
         """Return the private IP of the Cloud Server."""
         if not self._private_ip:
             self._private_ip = self._get_ip('private')
-    
+
         return self._private_ip
 
     @property
@@ -169,7 +171,7 @@ class CloudWinServer(rackspace_resource.RackspaceResource):
         """Get the images from the API."""
         logger.debug("Calling nova().images.list()")
         return [im.name for im in self.nova().images.list()]
-    
+
     @property
     def flavors(self):
         """Get the flavors from the API."""
@@ -180,7 +182,7 @@ class CloudWinServer(rackspace_resource.RackspaceResource):
         '''
         Create Rackspace Cloud Windows Server Instance.
         '''
-        logger.debug("CloudWinServer instance handle_create called")
+        logger.debug("WinServer instance handle_create called")
         serverinstancename = self.properties['name']
         flavor = self.properties['flavor']
         image = self.properties['image']
@@ -194,12 +196,13 @@ class CloudWinServer(rackspace_resource.RackspaceResource):
                  "C:\\cloud-automation\\bootstrap.cmd": data,
                  "C:\\rs-automation\\bootstrap.bat": data,
                  "C:\\rs-automation\\bootstrap.cmd": data}
-        imageRef = [im for im in self.nova().images.list()                    
+        imageRef = [im for im in self.nova().images.list()
                     if im.name == image][0]
-        instance = self.nova().servers.create(serverinstancename,
-                                          imageRef,
-                                          flavor,
-                                          files = files)
+        instance = self.nova().servers.create(
+            serverinstancename,
+            imageRef,
+            flavor,
+            files=files)
         if instance is not None:
             self.resource_id_set(instance.id)
 
@@ -212,7 +215,7 @@ class CloudWinServer(rackspace_resource.RackspaceResource):
         instance.get()  # get updated attributes
         if instance.status == 'ERROR':
             instance.delete()
-            raise exception.Error("CloudWinServer instance creation failed.")
+            raise exception.Error("WinServer instance creation failed.")
 
         if instance.status != 'ACTIVE':
             return False
@@ -221,43 +224,51 @@ class CloudWinServer(rackspace_resource.RackspaceResource):
                     (instance.name,
                      instance.flavor['id'],
                      instance.image['id']))
-        
+
         adminPass = instance.adminPass
         user_data = self.properties['user_data']
         # create powershell script with user_data
         powershell_script = tempfile.NamedTemporaryFile(suffix=".ps1",
                                                         delete=False)
-        
+
         powershell_script.write(user_data)
         ps_script_full_path = powershell_script.name
         powershell_script.close()
 
-        # TODO: fix this sleep issue
-        time.sleep(8*60)
         # Now connect to server using impacket and do the following
         # 1. copy powershell script to remote server
         # 2. execute the script
         # 3. close the connection (exit)
-        (status, output) = psexec_run_script(
-            'Administrator',
-            adminPass,
-            self.public_ip,
-            ps_script_full_path,
-            os.path.basename(ps_script_full_path))
-        
+        # TODO: need to fix sleep issue
+        time.sleep(5*60)
+        i = 1
+        MAX_RETRY_COUNT = 5
+        while True:
+            (status, output) = psexec_run_script(
+                'Administrator',
+                adminPass,
+                self.public_ip,
+                ps_script_full_path,
+                os.path.basename(ps_script_full_path))
+            
+            if status == 0 or i > MAX_RETRY_COUNT:
+                break
+            i = i + 1
+            time.sleep(1*60)
+
         # remove the temp powershell script
         try:
             os.remove(ps_script_full_path)
         except:
             pass
-        
+
         return True
 
     def handle_delete(self):
         '''
         Delete a Rackspace Cloud Windows Server Instance.
         '''
-        logger.debug("CloudWinServer handle_delete called.")
+        logger.debug("WinServer handle_delete called.")
         if self.resource_id is None:
             return
 
@@ -269,14 +280,14 @@ class CloudWinServer(rackspace_resource.RackspaceResource):
         '''
         Validate any of the provided params
         '''
-        res = super(CloudWinServer, self).validate()
+        res = super(WinServer, self).validate()
         if res:
             return res
 
         # check validity of given image
         if self.properties['image'] not in self.images:
             return {'Error': 'Image not found.'}
-        
+
         # check validity of gvien flavor
         if self.properties['flavor'] not in self.flavors:
             return {'Error': "flavor not found."}
@@ -295,7 +306,7 @@ class CloudWinServer(rackspace_resource.RackspaceResource):
 def resource_mapping():
     if rackspace_resource.PYRAX_INSTALLED:
         return {
-            'Rackspace::Cloud::CloudWinServer': CloudWinServer,
+            'Rackspace::Cloud::WinServer': WinServer,
         }
     else:
         return {}
