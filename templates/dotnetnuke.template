@@ -60,7 +60,7 @@ resources:
             $$wc.DownloadFile($$source, $$destination)
             Start-Process msiexec -ArgumentList "/i webpi.msi /qn"  -NoNewWindow -Wait
             echo "AppPath[@]Default Web Site/dotnetnuke" > dnn.app
-            echo "sqldbpassword[@]$(sqlpassword)" >> dnn.app
+            echo "sqldbpassword[@]${sqlpassword}" >> dnn.app
             $$tmpprofile = $$env:userprofile
             $$env:userprofile = "c:\users\administrator"
             $$wpicmd = "C:\Program Files\Microsoft\Web Platform Installer\WebPICMD.exe"
