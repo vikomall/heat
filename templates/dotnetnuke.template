@@ -40,7 +40,7 @@ parameters:
   sql_password:
     type: String
     default: verybadpass_123
-    description: dasblog Admin password
+    description: SQLExpress DB password
 
 
 resources:
