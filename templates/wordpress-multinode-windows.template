@@ -173,10 +173,10 @@ resources:
           params:
             server_name: { get_param: web_server_name }
       nodes:
-      - address: { get_attr: [ web_node_1, PrivateIp ] }
+      - address: { get_attr: [ web_node_1, PublicIp ] }
         port: 80
         condition: ENABLED
-      - address: { get_attr: [ web_node_2, PrivateIp ] }
+      - address: { get_attr: [ web_node_2, PublicIp ] }
         port: 80
         condition: ENABLED
       protocol: HTTP
