@@ -32,11 +32,6 @@ parameters:
     type: String
     default: Wordpress Webserver
 
-  key_name:
-    description: nova keypair to use for ssh access to the web nodes
-    type: String
-    required: true
-
   db_name:
     default: wordpress
     description: the name for the wordpress database
