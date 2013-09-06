@@ -22,6 +22,11 @@ parameters:
       - "8"
       description: must be a valid Rackspace Cloud Server flavor.
 
+  image:
+    type: String
+    default: Windows Server 2012 (with updates)
+    description: Windows Server Image
+
   web_server_name:
     description: base name for the web server instances
     type: String
@@ -227,4 +232,3 @@ outputs:
         params:
           ip: { get_attr: [ lb, PublicIp ] }
     description: Public URL for the wordpress blog
-
