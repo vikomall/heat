@@ -20,12 +20,21 @@ import shlex
 import socket
 import time
 import tempfile
+import threading
+
+from multiprocessing import Process, Queue
+
+import novaclient.exceptions as novaexception
 
 from heat.common import exception
+from heat.engine import scheduler
 from heat.engine.resources.rackspace import rackspace_resource
 from heat.openstack.common import log as logging
 
 logger = logging.getLogger(__name__)
+
+class Alarm(Exception):
+    pass
 
 
 def alarm_handler(signum, frame):
@@ -133,6 +142,8 @@ class WinServer(rackspace_resource.RackspaceResource):
         self._private_ip = None
         self._public_ip = None
         self._server = None
+        self._process = None
+        self._queue = None
 
     @property
     def server(self):
@@ -203,6 +214,7 @@ class WinServer(rackspace_resource.RackspaceResource):
             imageRef,
             flavor,
             files=files)
+        #instance = self.nova().servers.get(u'55a548ff-df17-40c0-a971-1f3bb7a2a129')
         if instance is not None:
             self.resource_id_set(instance.id)
 
@@ -212,58 +224,86 @@ class WinServer(rackspace_resource.RackspaceResource):
         '''
         Check if cloud Windows server instance creation is complete.
         '''
-        instance.get()  # get updated attributes
+        instance.get()  # get ted attributes
         if instance.status == 'ERROR':
             instance.delete()
             raise exception.Error("WinServer instance creation failed.")
 
         if instance.status != 'ACTIVE':
             return False
+        
+        if self._process is None:
+            logger.info("Windows server %s created (flavor:%s, image:%s)" %
+                        (instance.name,
+                         instance.flavor['id'],
+                         instance.image['id']))
+            logger.info("Spawning a process to begin installation steps.")
+            self._queue = Queue()
+            publicip = self.public_ip
+            self._process = Process(
+                target= self._configure_server,
+                args= (instance.adminPass, self.properties['user_data'],
+                       self.public_ip, self._queue))
+            self._process.start()
+            return False
 
-        logger.info("Cloud Windows server %s created (flavor:%s, image:%s)" %
-                    (instance.name,
-                     instance.flavor['id'],
-                     instance.image['id']))
-
-        adminPass = instance.adminPass
-        user_data = self.properties['user_data']
-        # create powershell script with user_data
-        powershell_script = tempfile.NamedTemporaryFile(suffix=".ps1",
-                                                        delete=False)
-
-        powershell_script.write(user_data)
-        ps_script_full_path = powershell_script.name
-        powershell_script.close()
-
-        # Now connect to server using impacket and do the following
-        # 1. copy powershell script to remote server
-        # 2. execute the script
-        # 3. close the connection (exit)
-        # TODO: need to fix sleep issue
-        time.sleep(5*60)
-        i = 1
-        MAX_RETRY_COUNT = 5
-        while True:
-            (status, output) = psexec_run_script(
-                'Administrator',
-                adminPass,
-                self.public_ip,
-                ps_script_full_path,
-                os.path.basename(ps_script_full_path))
-            
-            if status == 0 or i > MAX_RETRY_COUNT:
-                break
-            i = i + 1
-            time.sleep(1*60)
-
-        # remove the temp powershell script
+        if self._process.is_alive():
+            return False
+        
+        if self._process.exitcode == 0:
+            return True
+        
+        exp = self._queue.get() if self._queue.empty() is False else None
+        if exp is not None:
+            raise exp
+    
+    def _configure_server(self, admin_pass, user_data, public_ip, queue):
         try:
-            os.remove(ps_script_full_path)
-        except:
-            pass
+            #admin_pass = adminpass #instance.adminPass
+            #user_data = userdata #self.properties['user_data']
+            # create powershell script with user_data
+            powershell_script = tempfile.NamedTemporaryFile(suffix=".ps1",
+                                                            delete=False)
+    
+            powershell_script.write(user_data)
+            ps_script_full_path = powershell_script.name
+            powershell_script.close()
+    
+            # Now connect to server using impacket and do the following
+            # 1. copy powershell script to remote server
+            # 2. execute the script
+            # 3. close the connection (exit)
+            MAX_RETRY_COUNT = 20
+            retry_count = 0
+            while retry_count < MAX_RETRY_COUNT:
+                (status, output) = psexec_run_script(
+                    'Administrator',
+                    admin_pass,
+                    public_ip,
+                    ps_script_full_path,
+                    os.path.basename(ps_script_full_path))
+                
+                if status != 0:
+                    continue
+                    #return False
+                
+                retry_count += 1
+            
+            # remove the temp powershell script
+            try:
+                os.remove(ps_script_full_path)
+            except:
+                pass
+    
+            if retry_count > MAX_RETRY_COUNT:
+                queue.put(exception.Error("Resource creation timeout out"))
+                exit(1)
+        except Exception as exp:
+            queue.put(exp)
+            exit(1)
 
-        return True
-
+        exit(0)
+        
     def handle_delete(self):
         '''
         Delete a Rackspace Cloud Windows Server Instance.
@@ -272,8 +312,12 @@ class WinServer(rackspace_resource.RackspaceResource):
         if self.resource_id is None:
             return
 
-        instance = self.nova().servers.get(self.resource_id)
-        instance.delete()
+        try:
+            instance = self.nova().servers.get(self.resource_id)
+            instance.delete()
+        except novaexception.NotFound:
+            pass
+
         self.resource_id = None
 
     def validate(self):
