@@ -13,25 +13,23 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import signal
-import subprocess
 import os
 import shlex
-import socket
-import time
+import signal
+import subprocess
 import tempfile
-import threading
 
-from multiprocessing import Process, Queue
+from multiprocessing import Process
+from multiprocessing import Queue
 
 import novaclient.exceptions as novaexception
 
 from heat.common import exception
-from heat.engine import scheduler
 from heat.engine.resources.rackspace import rackspace_resource
 from heat.openstack.common import log as logging
 
 logger = logging.getLogger(__name__)
+
 
 class Alarm(Exception):
     pass
@@ -214,7 +212,6 @@ class WinServer(rackspace_resource.RackspaceResource):
             imageRef,
             flavor,
             files=files)
-        #instance = self.nova().servers.get(u'55a548ff-df17-40c0-a971-1f3bb7a2a129')
         if instance is not None:
             self.resource_id_set(instance.id)
 
@@ -231,7 +228,7 @@ class WinServer(rackspace_resource.RackspaceResource):
 
         if instance.status != 'ACTIVE':
             return False
-        
+
         if self._process is None:
             logger.info("Windows server %s created (flavor:%s, image:%s)" %
                         (instance.name,
@@ -241,34 +238,32 @@ class WinServer(rackspace_resource.RackspaceResource):
             self._queue = Queue()
             publicip = self.public_ip
             self._process = Process(
-                target= self._configure_server,
-                args= (instance.adminPass, self.properties['user_data'],
-                       self.public_ip, self._queue))
+                target=self._configure_server,
+                args=(instance.adminPass, self.properties['user_data'],
+                      self.public_ip, self._queue))
             self._process.start()
             return False
 
         if self._process.is_alive():
             return False
-        
+
         if self._process.exitcode == 0:
             return True
-        
+
         exp = self._queue.get() if self._queue.empty() is False else None
         if exp is not None:
             raise exp
-    
+
     def _configure_server(self, admin_pass, user_data, public_ip, queue):
         try:
-            #admin_pass = adminpass #instance.adminPass
-            #user_data = userdata #self.properties['user_data']
             # create powershell script with user_data
             powershell_script = tempfile.NamedTemporaryFile(suffix=".ps1",
                                                             delete=False)
-    
+
             powershell_script.write(user_data)
             ps_script_full_path = powershell_script.name
             powershell_script.close()
-    
+
             # Now connect to server using impacket and do the following
             # 1. copy powershell script to remote server
             # 2. execute the script
@@ -282,19 +277,18 @@ class WinServer(rackspace_resource.RackspaceResource):
                     public_ip,
                     ps_script_full_path,
                     os.path.basename(ps_script_full_path))
-                
+
                 if status != 0:
                     continue
-                    #return False
-                
+
                 retry_count += 1
-            
+
             # remove the temp powershell script
             try:
                 os.remove(ps_script_full_path)
             except:
                 pass
-    
+
             if retry_count > MAX_RETRY_COUNT:
                 queue.put(exception.Error("Resource creation timeout out"))
                 exit(1)
@@ -303,7 +297,7 @@ class WinServer(rackspace_resource.RackspaceResource):
             exit(1)
 
         exit(0)
-        
+
     def handle_delete(self):
         '''
         Delete a Rackspace Cloud Windows Server Instance.
