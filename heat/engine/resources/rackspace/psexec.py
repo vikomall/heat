@@ -7,7 +7,7 @@
 #
 # $Id: psexec.py 712 2012-09-06 04:26:22Z bethus@gmail.com $
 #
-# PSEXEC like functionality example using RemComSvc 
+# PSEXEC like functionality example using RemComSvc
 # (https://github.com/kavika13/RemCom)
 #
 # Author:
@@ -22,45 +22,53 @@ import cmd
 
 #from impacket import version
 from impacket.smbconnection import *
-from impacket.dcerpc import dcerpc_v4, dcerpc, transport, svcctl, srvsvc
+#from impacket.dcerpc import dcerpc_v4
+#from impacket.dcerpc import dcerpc
+#from impacket.dcerpc import srvsvc
+#from impacket.dcerpc import svcctl
+from impacket.dcerpc import transport
 from impacket.structure import Structure
-from threading import Thread, Lock
-from impacket.examples import remcomsvc, serviceinstall
+from threading import Thread
+from threading import Lock
+from impacket.examples import remcomsvc
+from impacket.examples import serviceinstall
 import argparse
 import random
 import string
 import time
 
+
 class RemComMessage(Structure):
     structure = (
-        ('Command','4096s=""'),
-        ('WorkingDir','260s=""'),
-        ('Priority','<L=0x20'),
-        ('ProcessID','<L=0x01'),
-        ('Machine','260s=""'),
-        ('NoWait','<L=0'),
+        ('Command', '4096s=""'),
+        ('WorkingDir', '260s=""'),
+        ('Priority', '<L=0x20'),
+        ('ProcessID', '<L=0x01'),
+        ('Machine', '260s=""'),
+        ('NoWait', '<L=0'),
     )
+
 
 class RemComResponse(Structure):
     structure = (
-        ('ErrorCode','<L=0'),
-        ('ReturnCode','<L=0'),
+        ('ErrorCode', '<L=0'),
+        ('ReturnCode', '<L=0'),
     )
 
-RemComSTDOUT         = "RemCom_stdout"
-RemComSTDIN          = "RemCom_stdin"
-RemComSTDERR         = "RemCom_stderr"
+RemComSTDOUT = "RemCom_stdout"
+RemComSTDIN = "RemCom_stdin"
+RemComSTDERR = "RemCom_stderr"
 
 lock = Lock()
+
 
 class PSEXEC:
     KNOWN_PROTOCOLS = {
         '139/SMB': (r'ncacn_np:%s[\pipe\svcctl]', 139),
         '445/SMB': (r'ncacn_np:%s[\pipe\svcctl]', 445),
-        }
+    }
 
-
-    def __init__(self, command, path, exeFile, protocols=None, 
+    def __init__(self, command, path, exeFile, protocols=None,
                  username='', password='', domain='', hashes=None):
         if not protocols:
             protocols = PSEXEC.KNOWN_PROTOCOLS.keys()
@@ -87,7 +95,7 @@ class PSEXEC:
 
             rpctransport = transport.DCERPCTransportFactory(stringbinding)
             rpctransport.set_dport(port)
-            if hasattr(rpctransport,'preferred_dialect'):
+            if hasattr(rpctransport, 'preferred_dialect'):
                 rpctransport.preferred_dialect(SMB_DIALECT)
             if hasattr(rpctransport, 'set_credentials'):
                 # This method exists only for selected protocol sequences.
@@ -148,14 +156,14 @@ class PSEXEC:
                     sys.exit(1)
                 installService = serviceinstall.ServiceInstall(
                     rpctransport.get_smb_connection(), f)
-    
+
             installService.install()
 
             if self.__exeFile is not None:
                 f.close()
 
             tid = s.connectTree('IPC$')
-            fid_main = self.openPipe(s, tid, '\RemCom_communicaton', 0x12019f) 
+            fid_main = self.openPipe(s, tid, '\RemCom_communicaton', 0x12019f)
 
             packet = RemComMessage()
             pid = os.getpid()
@@ -177,32 +185,34 @@ class PSEXEC:
             retCode = None
 
             # Create the pipes threads
-            stdin_pipe  = RemoteStdInPipe(
+            stdin_pipe = RemoteStdInPipe(
                 rpctransport,
                 '\%s%s%d' % (RemComSTDIN, packet['Machine'],
                              packet['ProcessID']),
                 smb.FILE_WRITE_DATA | smb.FILE_APPEND_DATA,
-                installService.getShare() )
+                installService.getShare())
             stdin_pipe.start()
             stdout_pipe = RemoteStdOutPipe(
                 rpctransport,
-                '\%s%s%d' % (RemComSTDOUT,packet['Machine'],
+                '\%s%s%d' % (RemComSTDOUT, packet['Machine'],
                              packet['ProcessID']),
-                smb.FILE_READ_DATA )
+                smb.FILE_READ_DATA)
             stdout_pipe.start()
             stderr_pipe = RemoteStdErrPipe(
                 rpctransport,
-                '\%s%s%d' % (RemComSTDERR,packet['Machine'],
+                '\%s%s%d' % (RemComSTDERR, packet['Machine'],
                              packet['ProcessID']),
-                smb.FILE_READ_DATA )
+                smb.FILE_READ_DATA)
             stderr_pipe.start()
-            
+
             # And we stay here till the end
             ans = s.readNamedPipe(tid, fid_main, 8)
 
             if len(ans):
-               retCode = RemComResponse(ans)
-               print "[*] Process %s finished with ErrorCode: %d, ReturnCode: %d" % (self.__command, retCode['ErrorCode'], retCode['ReturnCode'])
+                retCode = RemComResponse(ans)
+                print "[*] Process %s finished with ErrorCode: %d, "\
+                      "ReturnCode: %d" % (self.__command, retCode['ErrorCode'],
+                                          retCode['ReturnCode'])
             installService.uninstall()
             unInstalled = True
             sys.exit(retCode['ReturnCode'])
@@ -255,7 +265,8 @@ class Pipes(Thread):
                                             fileAttributes=0x80)
             self.server.setTimeout(1000000)
         except:
-            print "[!] Something wen't wrong connecting the pipes(%s), try again" % self.__class__
+            print "[!] Something wen't wrong connecting the pipes(%s), "\
+                  "try again" % self.__class__
 
 
 class RemoteStdOutPipe(Pipes):
@@ -339,8 +350,8 @@ class RemoteShell(cmd.Cmd):
                               the connected share (%s)
  get {file}                 - downloads pathname RELATIVE to the connected
                               share (%s) to the current local dir
- ! {cmd}                    - executes a local shell cmd
-""" % (self.share, self.share)
+ ! {cmd}                    - executes a local shell cmd""" % (self.share,
+                                                               self.share)
         self.send_data('\r\n', False)
 
     def do_shell(self, s):
@@ -406,7 +417,7 @@ class RemoteShell(cmd.Cmd):
         self.server.logoff()
 
     def default(self, line):
-        self.send_data(line+'\r\n')
+        self.send_data(line + '\r\n')
 
     def send_data(self, data, hideOutput=True):
         if hideOutput is True:
