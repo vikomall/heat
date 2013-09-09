@@ -190,10 +190,10 @@ def stack_get_by_name(context, stack_name, owner_id=None):
 
 
 def stack_get(context, stack_id, admin=False, show_deleted=False):
-    result = soft_delete_aware_query(context,
-                                     models.Stack,
-                                     show_deleted=show_deleted).\
-        filter_by(id=stack_id).first()
+    result = model_query(context, models.Stack).get(stack_id)
+
+    if result is None or result.deleted_at is not None and not show_deleted:
+        return None
 
     # If the admin flag is True, we allow retrieval of a specific
     # stack without the tenant scoping
@@ -259,8 +259,14 @@ def stack_delete(context, stack_id):
 def user_creds_create(context):
     values = context.to_dict()
     user_creds_ref = models.UserCreds()
-    user_creds_ref.update(values)
-    user_creds_ref.password = crypt.encrypt(values['password'])
+    if values.get('trust_id'):
+        user_creds_ref.trust_id = crypt.encrypt(values.get('trust_id'))
+        user_creds_ref.trustor_user_id = values.get('trustor_user_id')
+        user_creds_ref.username = None
+        user_creds_ref.password = None
+    else:
+        user_creds_ref.update(values)
+        user_creds_ref.password = crypt.encrypt(values['password'])
     user_creds_ref.save(_session(context))
     return user_creds_ref
 
@@ -271,6 +277,7 @@ def user_creds_get(user_creds_id):
     # or it can be committed back to the DB in decrypted form
     result = dict(db_result)
     result['password'] = crypt.decrypt(result['password'])
+    result['trust_id'] = crypt.decrypt(result['trust_id'])
     return result
 
 
@@ -315,8 +322,7 @@ def event_create(context, values):
 
 
 def watch_rule_get(context, watch_rule_id):
-    result = model_query(context, models.WatchRule).\
-        filter_by(id=watch_rule_id).first()
+    result = model_query(context, models.WatchRule).get(watch_rule_id)
     return result
 
 

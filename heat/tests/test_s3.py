@@ -91,7 +91,7 @@ class s3Test(HeatTestCase):
              'X-Container-Read': 'test_tenant:test_username'}
         ).AndReturn(None)
         swiftclient.Connection.get_auth().MultipleTimes().AndReturn(
-            ('http://localhost:8080/v_2', None))
+            ('http://server.test:8080/v_2', None))
         swiftclient.Connection.delete_container(container_name).AndReturn(None)
 
         self.m.ReplayAll()
@@ -102,8 +102,8 @@ class s3Test(HeatTestCase):
         ref_id = rsrc.FnGetRefId()
         self.assertEqual(container_name, ref_id)
 
-        self.assertEqual('localhost', rsrc.FnGetAtt('DomainName'))
-        url = 'http://localhost:8080/v_2/%s' % ref_id
+        self.assertEqual('server.test', rsrc.FnGetAtt('DomainName'))
+        url = 'http://server.test:8080/v_2/%s' % ref_id
 
         self.assertEqual(url, rsrc.FnGetAtt('WebsiteURL'))
 
@@ -116,7 +116,7 @@ class s3Test(HeatTestCase):
         self.assertRaises(resource.UpdateReplace,
                           rsrc.handle_update, {}, {}, {})
 
-        rsrc.delete()
+        scheduler.TaskRunner(rsrc.delete)()
         self.m.VerifyAll()
 
     def test_public_read(self):
@@ -136,7 +136,7 @@ class s3Test(HeatTestCase):
         properties['AccessControl'] = 'PublicRead'
         stack = utils.parse_stack(t)
         rsrc = self.create_resource(t, stack, 'S3Bucket')
-        rsrc.delete()
+        scheduler.TaskRunner(rsrc.delete)()
         self.m.VerifyAll()
 
     def test_public_read_write(self):
@@ -156,7 +156,7 @@ class s3Test(HeatTestCase):
         properties['AccessControl'] = 'PublicReadWrite'
         stack = utils.parse_stack(t)
         rsrc = self.create_resource(t, stack, 'S3Bucket')
-        rsrc.delete()
+        scheduler.TaskRunner(rsrc.delete)()
         self.m.VerifyAll()
 
     def test_authenticated_read(self):
@@ -175,7 +175,7 @@ class s3Test(HeatTestCase):
         properties['AccessControl'] = 'AuthenticatedRead'
         stack = utils.parse_stack(t)
         rsrc = self.create_resource(t, stack, 'S3Bucket')
-        rsrc.delete()
+        scheduler.TaskRunner(rsrc.delete)()
         self.m.VerifyAll()
 
     def test_website(self):
@@ -194,7 +194,7 @@ class s3Test(HeatTestCase):
         t = template_format.parse(swift_template)
         stack = utils.parse_stack(t)
         rsrc = self.create_resource(t, stack, 'S3BucketWebsite')
-        rsrc.delete()
+        scheduler.TaskRunner(rsrc.delete)()
         self.m.VerifyAll()
 
     def test_delete_exception(self):
@@ -212,7 +212,7 @@ class s3Test(HeatTestCase):
         t = template_format.parse(swift_template)
         stack = utils.parse_stack(t)
         rsrc = self.create_resource(t, stack, 'S3Bucket')
-        rsrc.delete()
+        scheduler.TaskRunner(rsrc.delete)()
 
         self.m.VerifyAll()
 
@@ -233,7 +233,7 @@ class s3Test(HeatTestCase):
         bucket['DeletionPolicy'] = 'Retain'
         stack = utils.parse_stack(t)
         rsrc = self.create_resource(t, stack, 'S3Bucket')
-        rsrc.delete()
+        scheduler.TaskRunner(rsrc.delete)()
         self.assertEqual((rsrc.DELETE, rsrc.COMPLETE), rsrc.state)
 
         self.m.VerifyAll()

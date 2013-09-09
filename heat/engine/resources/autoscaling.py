@@ -23,6 +23,7 @@ from heat.openstack.common import log as logging
 from heat.openstack.common import timeutils
 from heat.engine.properties import Properties
 from heat.engine import properties
+from heat.engine import scheduler
 from heat.engine import stack_resource
 
 logger = logging.getLogger(__name__)
@@ -213,7 +214,9 @@ class InstanceGroup(stack_resource.StackResource):
         """
         new_template = self._create_template(new_capacity)
         try:
-            self.update_with_template(new_template, {})
+            updater = self.update_with_template(new_template, {})
+            updater.run_to_completion()
+            self.check_update_complete(updater)
         finally:
             # Reload the LB in any case, so it's only pointing at healthy
             # nodes.
@@ -243,7 +246,7 @@ class InstanceGroup(stack_resource.StackResource):
                         (lb,))
                 resolved_snippet = self.stack.resolve_static_data(
                     lb_resource.json_snippet)
-                lb_resource.update(resolved_snippet)
+                scheduler.TaskRunner(lb_resource.update, resolved_snippet)()
 
     def FnGetRefId(self):
         return unicode(self.name)
@@ -255,7 +258,7 @@ class InstanceGroup(stack_resource.StackResource):
         '''
         if name == 'InstanceList':
             ips = [inst.FnGetAtt('PublicIp')
-                   for inst in self._nested.resources.values()]
+                   for inst in self.nested().resources.values()]
             if ips:
                 return unicode(','.join(ips))
 

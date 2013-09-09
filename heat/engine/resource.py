@@ -22,6 +22,7 @@ from heat.openstack.common import excutils
 from heat.db import api as db_api
 from heat.common import identifier
 from heat.common import short_id
+from heat.engine import scheduler
 from heat.engine import resources
 from heat.engine import timestamp
 # import class to avoid name collisions and ugly aliasing
@@ -114,6 +115,10 @@ class Resource(object):
     # Resource implementations set this to the name: description dictionary
     # that describes the appropriate resource attributes
     attributes_schema = {}
+
+    # If True, this resource may perform authenticated API requests
+    # throughout its lifecycle
+    requires_deferred_auth = False
 
     def __new__(cls, name, json, stack):
         '''Create a new Resource of the appropriate class for its type.'''
@@ -269,29 +274,29 @@ class Resource(object):
     def __str__(self):
         return '%s "%s"' % (self.__class__.__name__, self.name)
 
-    def _add_dependencies(self, deps, head, fragment):
+    def _add_dependencies(self, deps, path, fragment):
         if isinstance(fragment, dict):
             for key, value in fragment.items():
                 if key in ('DependsOn', 'Ref', 'Fn::GetAtt'):
                     if key == 'Fn::GetAtt':
-                        value, head = value
+                        value, att = value
 
                     try:
                         target = self.stack.resources[value]
                     except KeyError:
                         raise exception.InvalidTemplateReference(
                             resource=value,
-                            key=head)
+                            key=path)
                     if key == 'DependsOn' or target.strict_dependency:
                         deps += (self, target)
                 else:
-                    self._add_dependencies(deps, key, value)
+                    self._add_dependencies(deps, '%s.%s' % (path, key), value)
         elif isinstance(fragment, list):
-            for item in fragment:
-                self._add_dependencies(deps, head, item)
+            for index, item in enumerate(fragment):
+                self._add_dependencies(deps, '%s[%d]' % (path, index), item)
 
     def add_dependencies(self, deps):
-        self._add_dependencies(deps, None, self.t)
+        self._add_dependencies(deps, self.name, self.t)
         deps += (self, None)
 
     def required_by(self):
@@ -420,7 +425,11 @@ class Resource(object):
             tmpl_diff = self.update_template_diff(after, before)
             prop_diff = self.update_template_diff_properties(after, before)
             if callable(getattr(self, 'handle_update', None)):
-                result = self.handle_update(after, tmpl_diff, prop_diff)
+                handle_data = self.handle_update(after, tmpl_diff, prop_diff)
+                yield
+                if callable(getattr(self, 'check_update_complete', None)):
+                    while not self.check_update_complete(handle_data):
+                        yield
         except UpdateReplace:
             logger.debug("Resource %s update requires replacement" % self.name)
             raise
@@ -511,12 +520,21 @@ class Resource(object):
             self.state_set(action, self.IN_PROGRESS)
 
             deletion_policy = self.t.get('DeletionPolicy', 'Delete')
+            handle_data = None
             if deletion_policy == 'Delete':
                 if callable(getattr(self, 'handle_delete', None)):
-                    self.handle_delete()
+                    handle_data = self.handle_delete()
+                    yield
             elif deletion_policy == 'Snapshot':
                 if callable(getattr(self, 'handle_snapshot_delete', None)):
-                    self.handle_snapshot_delete(initial_state)
+                    handle_data = self.handle_snapshot_delete(initial_state)
+                    yield
+
+            if (deletion_policy != 'Retain' and
+                    callable(getattr(self, 'check_delete_complete', None))):
+                while not self.check_delete_complete(handle_data):
+                    yield
+
         except Exception as ex:
             logger.exception('Delete %s', str(self))
             failure = exception.ResourceFailure(ex, self, self.action)
@@ -532,11 +550,12 @@ class Resource(object):
         else:
             self.state_set(action, self.COMPLETE)
 
+    @scheduler.wrappertask
     def destroy(self):
         '''
         Delete the resource and remove it from the database.
         '''
-        self.delete()
+        yield self.delete()
 
         if self.id is None:
             return

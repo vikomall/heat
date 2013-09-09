@@ -271,6 +271,14 @@ class Stack(object):
             if result:
                 raise StackValidationFailed(message=result)
 
+    def requires_deferred_auth(self):
+        '''
+        Returns whether this stack may need to perform API requests
+        during its lifecycle using the configured deferred authentication
+        method.
+        '''
+        return any(res.requires_deferred_auth for res in self)
+
     def state_set(self, action, status, reason):
         '''Update the stack state in the database.'''
         if action not in self.ACTIONS:
@@ -378,7 +386,7 @@ class Stack(object):
         else:
             return None
 
-    def update(self, newstack, action=UPDATE):
+    def update(self, newstack):
         '''
         Compare the current stack with newstack,
         and where necessary create/update/delete the resources until
@@ -390,6 +398,11 @@ class Stack(object):
         Update will fail if it exceeds the specified timeout. The default is
         60 minutes, set in the constructor
         '''
+        updater = scheduler.TaskRunner(self.update_task, newstack)
+        updater()
+
+    @scheduler.wrappertask
+    def update_task(self, newstack, action=UPDATE):
         if action not in (self.UPDATE, self.ROLLBACK):
             logger.error("Unexpected action %s passed to update!" % action)
             self.state_set(self.UPDATE, self.FAILED,
@@ -420,7 +433,10 @@ class Stack(object):
             self.parameters = newstack.parameters
 
             try:
-                updater(timeout=self.timeout_secs())
+                updater.start(timeout=self.timeout_secs())
+                yield
+                while not updater.step():
+                    yield
             finally:
                 cur_deps = self._get_dependencies(self.resources.itervalues())
                 self.dependencies = cur_deps
@@ -442,7 +458,7 @@ class Stack(object):
                 # If rollback is enabled, we do another update, with the
                 # existing template, so we roll back to the original state
                 if not self.disable_rollback:
-                    self.update(oldstack, action=self.ROLLBACK)
+                    yield self.update_task(oldstack, action=self.ROLLBACK)
                     return
         else:
             logger.debug('Deleting backup stack')
@@ -473,30 +489,34 @@ class Stack(object):
                            "Invalid action %s" % action)
             return
 
+        stack_status = self.COMPLETE
+        reason = 'Stack %s completed successfully' % action.lower()
         self.state_set(action, self.IN_PROGRESS, 'Stack %s started' % action)
-
-        failures = []
 
         backup_stack = self._backup_stack(False)
         if backup_stack is not None:
             backup_stack.delete()
             if backup_stack.status != backup_stack.COMPLETE:
                 errs = backup_stack.status_reason
-                failures.append('Error deleting backup resources: %s' % errs)
+                failure = 'Error deleting backup resources: %s' % errs
+                self.state_set(action, self.FAILED,
+                               'Failed to %s : %s' % (action, failure))
+                return
 
-        for res in reversed(self):
-            try:
-                res.destroy()
-            except exception.ResourceFailure as ex:
-                logger.error('Failed to delete %s error: %s' % (str(res),
-                                                                str(ex)))
-                failures.append(str(res))
+        action_task = scheduler.DependencyTaskGroup(self.dependencies,
+                                                    resource.Resource.destroy,
+                                                    reverse=True)
+        try:
+            scheduler.TaskRunner(action_task)(timeout=self.timeout_secs())
+        except exception.ResourceFailure as ex:
+            stack_status = self.FAILED
+            reason = 'Resource %s failed: %s' % (action.lower(), str(ex))
+        except scheduler.Timeout:
+            stack_status = self.FAILED
+            reason = '%s timed out' % action.title()
 
-        if failures:
-            self.state_set(action, self.FAILED,
-                           'Failed to %s : %s' % (action, ', '.join(failures)))
-        else:
-            self.state_set(action, self.COMPLETE, '%s completed' % action)
+        self.state_set(action, stack_status, reason)
+        if stack_status != self.FAILED:
             db_api.stack_delete(self.context, self.id)
             self.id = None
 
@@ -545,7 +565,7 @@ class Stack(object):
 
         for res in reversed(deps):
             try:
-                res.destroy()
+                scheduler.TaskRunner(res.destroy)()
             except exception.ResourceFailure as ex:
                 failed = True
                 logger.error('delete: %s' % str(ex))

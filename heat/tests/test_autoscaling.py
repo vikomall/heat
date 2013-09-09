@@ -108,7 +108,7 @@ class AutoScalingTest(HeatTestCase):
         super(AutoScalingTest, self).setUp()
         utils.setup_dummy_db()
         cfg.CONF.set_default('heat_waitcondition_server_url',
-                             'http://127.0.0.1:8000/v1/waitcondition')
+                             'http://server.test:8000/v1/waitcondition')
         self.fc = fakes.FakeKeystoneClient()
 
     def create_scaling_group(self, t, stack, resource_name):
@@ -213,7 +213,7 @@ class AutoScalingTest(HeatTestCase):
         # Reduce the min size to 0, should complete without adjusting
         update_snippet = copy.deepcopy(rsrc.parsed_template())
         update_snippet['Properties']['MinSize'] = '0'
-        self.assertEqual(None, rsrc.update(update_snippet))
+        scheduler.TaskRunner(rsrc.update, update_snippet)()
         self.assertEqual(['WebServerGroup-0'], rsrc.get_instance_names())
 
         # trigger adjustment to reduce to 0, there should be no more instances
@@ -241,8 +241,8 @@ class AutoScalingTest(HeatTestCase):
         self.assertEqual(['WebServerGroup-0'], rsrc.get_instance_names())
         update_snippet = copy.deepcopy(rsrc.parsed_template())
         update_snippet['Properties']['AvailabilityZones'] = ['foo']
-        self.assertRaises(resource.UpdateReplace,
-                          rsrc.update, update_snippet)
+        updater = scheduler.TaskRunner(rsrc.update, update_snippet)
+        self.assertRaises(resource.UpdateReplace, updater)
 
         rsrc.delete()
         self.m.VerifyAll()
@@ -503,7 +503,7 @@ class AutoScalingTest(HeatTestCase):
         # Reduce the max size to 2, should complete without adjusting
         update_snippet = copy.deepcopy(rsrc.parsed_template())
         update_snippet['Properties']['MaxSize'] = '2'
-        self.assertEqual(None, rsrc.update(update_snippet))
+        scheduler.TaskRunner(rsrc.update, update_snippet)()
         self.assertEqual(['WebServerGroup-0'], rsrc.get_instance_names())
 
         self.assertEqual('2', rsrc.properties['MaxSize'])
@@ -534,7 +534,7 @@ class AutoScalingTest(HeatTestCase):
 
         update_snippet = copy.deepcopy(rsrc.parsed_template())
         update_snippet['Properties']['MinSize'] = '2'
-        self.assertEqual(None, rsrc.update(update_snippet))
+        scheduler.TaskRunner(rsrc.update, update_snippet)()
         self.assertEqual(['WebServerGroup-0', 'WebServerGroup-1'],
                          rsrc.get_instance_names())
         self.assertEqual('2', rsrc.properties['MinSize'])
@@ -565,7 +565,7 @@ class AutoScalingTest(HeatTestCase):
 
         update_snippet = copy.deepcopy(rsrc.parsed_template())
         update_snippet['Properties']['DesiredCapacity'] = '2'
-        self.assertEqual(None, rsrc.update(update_snippet))
+        scheduler.TaskRunner(rsrc.update, update_snippet)()
         self.assertEqual(['WebServerGroup-0', 'WebServerGroup-1'],
                          rsrc.get_instance_names())
 
@@ -593,7 +593,7 @@ class AutoScalingTest(HeatTestCase):
         # have no effect, it's an optional parameter
         update_snippet = copy.deepcopy(rsrc.parsed_template())
         del(update_snippet['Properties']['DesiredCapacity'])
-        self.assertEqual(None, rsrc.update(update_snippet))
+        scheduler.TaskRunner(rsrc.update, update_snippet)()
         self.assertEqual(['WebServerGroup-0', 'WebServerGroup-1'],
                          rsrc.get_instance_names())
 
@@ -619,7 +619,7 @@ class AutoScalingTest(HeatTestCase):
         self.assertEqual(['WebServerGroup-0'], rsrc.get_instance_names())
         update_snippet = copy.deepcopy(rsrc.parsed_template())
         update_snippet['Properties']['Cooldown'] = '61'
-        self.assertEqual(None, rsrc.update(update_snippet))
+        scheduler.TaskRunner(rsrc.update, update_snippet)()
         self.assertEqual('61', rsrc.properties['Cooldown'])
 
         rsrc.delete()
@@ -641,21 +641,26 @@ class AutoScalingTest(HeatTestCase):
                                                     u'LoadBalancerPort': u'80',
                                                     u'Protocol': u'HTTP'}],
                                     u'AvailabilityZones': ['abc', 'xyz']}}
-        self.m.StubOutWithMock(loadbalancer.LoadBalancer, 'update')
-        loadbalancer.LoadBalancer.update(expected).AndReturn(None)
 
         now = timeutils.utcnow()
         self._stub_meta_expected(now, 'ExactCapacity : 1')
         self._stub_create(1)
         self.m.ReplayAll()
         stack = utils.parse_stack(t, params=self.params)
-        rsrc = self.create_scaling_group(t, stack, 'WebServerGroup')
 
+        lb = stack['ElasticLoadBalancer']
+        self.m.StubOutWithMock(lb, 'handle_update')
+        lb.handle_update(expected,
+                         mox.IgnoreArg(),
+                         mox.IgnoreArg()).AndReturn(None)
+        self.m.ReplayAll()
+
+        rsrc = self.create_scaling_group(t, stack, 'WebServerGroup')
         self.assertEqual('WebServerGroup', rsrc.FnGetRefId())
         self.assertEqual(['WebServerGroup-0'], rsrc.get_instance_names())
         update_snippet = copy.deepcopy(rsrc.parsed_template())
         update_snippet['Properties']['Cooldown'] = '61'
-        self.assertEqual(None, rsrc.update(update_snippet))
+        scheduler.TaskRunner(rsrc.update, update_snippet)()
 
         rsrc.delete()
         self.m.VerifyAll()
@@ -678,8 +683,10 @@ class AutoScalingTest(HeatTestCase):
                 'pool_id': 'pool123',
                 'members': [u'WebServerGroup-0']}
         }
-        self.m.StubOutWithMock(neutron_lb.LoadBalancer, 'update')
-        neutron_lb.LoadBalancer.update(expected).AndReturn(None)
+        self.m.StubOutWithMock(neutron_lb.LoadBalancer, 'handle_update')
+        neutron_lb.LoadBalancer.handle_update(expected,
+                                              mox.IgnoreArg(),
+                                              mox.IgnoreArg()).AndReturn(None)
 
         now = timeutils.utcnow()
         self._stub_meta_expected(now, 'ExactCapacity : 1')
@@ -775,12 +782,12 @@ class AutoScalingTest(HeatTestCase):
 
         # Scale up one 1 instance with resource failure
         self.m.StubOutWithMock(instance.Instance, 'handle_create')
-        instance.Instance.handle_create().AndRaise(Exception)
+        instance.Instance.handle_create().AndRaise(exception.Error())
         self._stub_lb_reload(1, unset=False, nochange=True)
         self._stub_validate()
         self.m.ReplayAll()
 
-        self.assertRaises(Exception, rsrc.adjust, 1)
+        self.assertRaises(exception.Error, rsrc.adjust, 1)
         self.assertEqual(['WebServerGroup-0'], rsrc.get_instance_names())
 
         self.m.VerifyAll()
@@ -1373,7 +1380,7 @@ class AutoScalingTest(HeatTestCase):
         # Update scaling policy
         update_snippet = copy.deepcopy(up_policy.parsed_template())
         update_snippet['Properties']['ScalingAdjustment'] = '2'
-        self.assertEqual(None, up_policy.update(update_snippet))
+        scheduler.TaskRunner(up_policy.update, update_snippet)()
         self.assertEqual('2',
                          up_policy.properties['ScalingAdjustment'])
 

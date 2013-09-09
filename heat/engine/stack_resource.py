@@ -136,12 +136,23 @@ class StackResource(resource.Resource):
             self.attributes = None
             self._outputs_to_attribs(child_template)
 
-        nested_stack.update(stack)
+        updater = scheduler.TaskRunner(nested_stack.update_task, stack)
+        updater.start()
+        return updater
 
+    def check_update_complete(self, updater):
+        if updater is None:
+            return True
+
+        if not updater.step():
+            return False
+
+        nested_stack = self.nested()
         if nested_stack.state != (nested_stack.UPDATE,
                                   nested_stack.COMPLETE):
             raise exception.Error("Nested stack update failed: %s" %
                                   nested_stack.status_reason)
+        return True
 
     def delete_nested(self):
         '''
@@ -153,7 +164,22 @@ class StackResource(resource.Resource):
             logger.info("Stack not found to delete")
         else:
             if stack is not None:
-                stack.delete()
+                delete_task = scheduler.TaskRunner(stack.delete)
+                delete_task.start()
+                return delete_task
+
+    def check_delete_complete(self, delete_task):
+        if delete_task is None:
+            return True
+
+        done = delete_task.step()
+        if done:
+            nested_stack = self.nested()
+            if nested_stack.state != (nested_stack.DELETE,
+                                      nested_stack.COMPLETE):
+                raise exception.Error(nested_stack.status_reason)
+
+        return done
 
     def handle_suspend(self):
         stack = self.nested()

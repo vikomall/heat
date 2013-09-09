@@ -12,6 +12,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import mox
 
 from testtools import skipIf
 
@@ -518,12 +519,13 @@ class NeutronSubnetTest(HeatTestCase):
         ref_id = rsrc.FnGetRefId()
         self.assertEqual('91e47a57-7508-46fe-afc9-fc454e8580e1', ref_id)
         self.assertEqual(False, rsrc.FnGetAtt('enable_dhcp'))
-        self.assertEqual(rsrc.delete(), None)
+        scheduler.TaskRunner(rsrc.delete)()
         self.m.VerifyAll()
 
 
 @skipIf(neutronclient is None, 'neutronclient unavailable')
 class NeutronRouterTest(HeatTestCase):
+    @skipIf(router.neutronV20 is None, "Missing Neutron v2_0")
     def setUp(self):
         super(NeutronRouterTest, self).setUp()
         self.m.StubOutWithMock(neutronclient.Client, 'create_router')
@@ -533,6 +535,8 @@ class NeutronRouterTest(HeatTestCase):
         self.m.StubOutWithMock(neutronclient.Client, 'remove_interface_router')
         self.m.StubOutWithMock(neutronclient.Client, 'add_gateway_router')
         self.m.StubOutWithMock(neutronclient.Client, 'remove_gateway_router')
+        self.m.StubOutWithMock(router.neutronV20,
+                               'find_resourceid_by_name_or_id')
         self.m.StubOutWithMock(clients.OpenStackClients, 'keystone')
         utils.setup_dummy_db()
 
@@ -694,14 +698,19 @@ class NeutronRouterTest(HeatTestCase):
                 'subnet_id': '91e47a57-7508-46fe-afc9-fc454e8580e1'
             })
 
-        self.assertEqual(rsrc.delete(), None)
+        scheduler.TaskRunner(rsrc.delete)()
         rsrc.state_set(rsrc.CREATE, rsrc.COMPLETE, 'to delete again')
-        self.assertEqual(rsrc.delete(), None)
+        scheduler.TaskRunner(rsrc.delete)()
         self.m.VerifyAll()
 
     def test_gateway_router(self):
         clients.OpenStackClients.keystone().AndReturn(
             fakes.FakeKeystoneClient())
+        router.neutronV20.find_resourceid_by_name_or_id(
+            mox.IsA(neutronclient.Client),
+            'network',
+            'fc68ea2c-b60b-4b4f-bd82-94ec81110766'
+        ).AndReturn('fc68ea2c-b60b-4b4f-bd82-94ec81110766')
         neutronclient.Client.add_gateway_router(
             '3e46229d-8fce-4733-819a-b5fe630550f8',
             {'network_id': 'fc68ea2c-b60b-4b4f-bd82-94ec81110766'}
@@ -722,9 +731,9 @@ class NeutronRouterTest(HeatTestCase):
                 'network_id': 'fc68ea2c-b60b-4b4f-bd82-94ec81110766'
             })
 
-        self.assertEqual(rsrc.delete(), None)
+        scheduler.TaskRunner(rsrc.delete)()
         rsrc.state_set(rsrc.CREATE, rsrc.COMPLETE, 'to delete again')
-        self.assertEqual(rsrc.delete(), None)
+        scheduler.TaskRunner(rsrc.delete)()
         self.m.VerifyAll()
 
 
@@ -799,9 +808,9 @@ class NeutronFloatingIPTest(HeatTestCase):
                          fip.FnGetAtt('id'))
         self.assertRaises(resource.UpdateReplace,
                           fip.handle_update, {}, {}, {})
-        self.assertEqual(fip.delete(), None)
+        scheduler.TaskRunner(fip.delete)()
         fip.state_set(fip.CREATE, fip.COMPLETE, 'to delete again')
-        self.assertEqual(fip.delete(), None)
+        scheduler.TaskRunner(fip.delete)()
 
         self.m.VerifyAll()
 
@@ -967,16 +976,16 @@ class NeutronFloatingIPTest(HeatTestCase):
         self.assertRaises(resource.UpdateReplace,
                           fipa.handle_update, {}, {}, {})
 
-        self.assertEqual(fipa.delete(), None)
-        self.assertEqual(scheduler.TaskRunner(p.delete)(), None)
-        self.assertEqual(fip.delete(), None)
+        scheduler.TaskRunner(fipa.delete)()
+        scheduler.TaskRunner(p.delete)()
+        scheduler.TaskRunner(fip.delete)()
 
         fipa.state_set(fipa.CREATE, fipa.COMPLETE, 'to delete again')
         fip.state_set(fip.CREATE, fip.COMPLETE, 'to delete again')
         p.state_set(p.CREATE, p.COMPLETE, 'to delete again')
 
-        self.assertEqual(fipa.delete(), None)
+        scheduler.TaskRunner(fipa.delete)()
         self.assertEqual(scheduler.TaskRunner(p.delete)(), None)
-        self.assertEqual(fip.delete(), None)
+        scheduler.TaskRunner(fip.delete)()
 
         self.m.VerifyAll()

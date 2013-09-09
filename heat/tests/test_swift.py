@@ -130,7 +130,7 @@ class swiftTest(HeatTestCase):
              'X-Container-Read': None}
         ).AndReturn(None)
         swiftclient.Connection.get_auth().MultipleTimes().AndReturn(
-            ('http://localhost:8080/v_2', None))
+            ('http://server.test:8080/v_2', None))
         swiftclient.Connection.head_container(
             mox.IgnoreArg()).MultipleTimes().AndReturn(headers)
         swiftclient.Connection.delete_container(container_name).AndReturn(None)
@@ -143,8 +143,8 @@ class swiftTest(HeatTestCase):
         ref_id = rsrc.FnGetRefId()
         self.assertEqual(container_name, ref_id)
 
-        self.assertEqual('localhost', rsrc.FnGetAtt('DomainName'))
-        url = 'http://localhost:8080/v_2/%s' % ref_id
+        self.assertEqual('server.test', rsrc.FnGetAtt('DomainName'))
+        url = 'http://server.test:8080/v_2/%s' % ref_id
 
         self.assertEqual(url, rsrc.FnGetAtt('WebsiteURL'))
         self.assertEqual('82', rsrc.FnGetAtt('ObjectCount'))
@@ -160,7 +160,7 @@ class swiftTest(HeatTestCase):
         self.assertRaises(resource.UpdateReplace,
                           rsrc.handle_update, {}, {}, {})
 
-        rsrc.delete()
+        scheduler.TaskRunner(rsrc.delete)()
         self.m.VerifyAll()
 
     def test_public_read(self):
@@ -179,7 +179,7 @@ class swiftTest(HeatTestCase):
         properties['X-Container-Read'] = '.r:*'
         stack = utils.parse_stack(t)
         rsrc = self.create_resource(t, stack, 'SwiftContainer')
-        rsrc.delete()
+        scheduler.TaskRunner(rsrc.delete)()
         self.m.VerifyAll()
 
     def test_public_read_write(self):
@@ -199,7 +199,7 @@ class swiftTest(HeatTestCase):
         properties['X-Container-Write'] = '.r:*'
         stack = utils.parse_stack(t)
         rsrc = self.create_resource(t, stack, 'SwiftContainer')
-        rsrc.delete()
+        scheduler.TaskRunner(rsrc.delete)()
         self.m.VerifyAll()
 
     def test_website(self):
@@ -218,7 +218,7 @@ class swiftTest(HeatTestCase):
         t = template_format.parse(swift_template)
         stack = utils.parse_stack(t)
         rsrc = self.create_resource(t, stack, 'SwiftContainerWebsite')
-        rsrc.delete()
+        scheduler.TaskRunner(rsrc.delete)()
         self.m.VerifyAll()
 
     def test_delete_exception(self):
@@ -236,7 +236,7 @@ class swiftTest(HeatTestCase):
         t = template_format.parse(swift_template)
         stack = utils.parse_stack(t)
         rsrc = self.create_resource(t, stack, 'SwiftContainer')
-        rsrc.delete()
+        scheduler.TaskRunner(rsrc.delete)()
 
         self.m.VerifyAll()
 
@@ -257,7 +257,7 @@ class swiftTest(HeatTestCase):
         container['DeletionPolicy'] = 'Retain'
         stack = utils.parse_stack(t)
         rsrc = self.create_resource(t, stack, 'SwiftContainer')
-        rsrc.delete()
+        scheduler.TaskRunner(rsrc.delete)()
         self.assertEqual((rsrc.DELETE, rsrc.COMPLETE), rsrc.state)
 
         self.m.VerifyAll()

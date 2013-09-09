@@ -25,7 +25,6 @@ from heat.tests import generic_resource
 from heat.tests.common import HeatTestCase
 from heat.tests import utils
 
-from heat.common import context
 from heat.common import template_format
 
 from heat.openstack.common.importutils import try_import
@@ -93,7 +92,7 @@ class CeilometerAlarmTest(HeatTestCase):
                                  generic_resource.SignalResource)
 
         cfg.CONF.set_default('heat_waitcondition_server_url',
-                             'http://127.0.0.1:8000/v1/waitcondition')
+                             'http://server.test:8000/v1/waitcondition')
 
         self.fc = fakes.FakeKeystoneClient()
         self.fa = FakeCeilometerClient()
@@ -105,7 +104,7 @@ class CeilometerAlarmTest(HeatTestCase):
             template = alarm_template
         temp = template_format.parse(template)
         template = parser.Template(temp)
-        ctx = context.get_admin_context()
+        ctx = utils.dummy_context()
         ctx.tenant_id = 'test_tenant'
         stack = parser.Stack(ctx, utils.random_name(), template,
                              disable_rollback=True)
@@ -164,7 +163,7 @@ class CeilometerAlarmTest(HeatTestCase):
         snippet['Properties']['alarm_actions'] = []
         snippet['Properties']['ok_actions'] = ['signal_handler']
 
-        self.assertEqual(None, rsrc.update(snippet))
+        scheduler.TaskRunner(rsrc.update, snippet)()
 
         self.m.VerifyAll()
 
@@ -189,8 +188,8 @@ class CeilometerAlarmTest(HeatTestCase):
         snippet = copy.deepcopy(rsrc.parsed_template())
         snippet['Properties']['counter_name'] = 'temp'
 
-        self.assertRaises(resource.UpdateReplace,
-                          rsrc.update, snippet)
+        updater = scheduler.TaskRunner(rsrc.update, snippet)
+        self.assertRaises(resource.UpdateReplace, updater)
 
         self.m.VerifyAll()
 

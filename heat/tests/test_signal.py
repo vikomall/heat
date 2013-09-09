@@ -21,7 +21,6 @@ from heat.tests import fakes
 from heat.tests.common import HeatTestCase
 from heat.tests import utils
 
-from heat.common import context
 from heat.common import exception
 from heat.common import template_format
 
@@ -58,7 +57,7 @@ class SignalTest(HeatTestCase):
                                  generic_resource.GenericResource)
 
         cfg.CONF.set_default('heat_waitcondition_server_url',
-                             'http://127.0.0.1:8000/v1/waitcondition')
+                             'http://server.test:8000/v1/waitcondition')
 
         self.stack_id = 'STACKABCD1234'
         self.fc = fakes.FakeKeystoneClient()
@@ -72,7 +71,7 @@ class SignalTest(HeatTestCase):
     def create_stack(self, stack_name='test_stack', stub=True):
         temp = template_format.parse(test_template_signal)
         template = parser.Template(temp)
-        ctx = context.get_admin_context()
+        ctx = utils.dummy_context()
         ctx.tenant_id = 'test_tenant'
         stack = parser.Stack(ctx, stack_name, template,
                              disable_rollback=True)
@@ -85,6 +84,9 @@ class SignalTest(HeatTestCase):
             self.m.StubOutWithMock(sr.SignalResponder, 'keystone')
             sr.SignalResponder.keystone().MultipleTimes().AndReturn(
                 self.fc)
+
+        self.m.ReplayAll()
+
         return stack
 
     @utils.stack_delete_after
@@ -100,7 +102,7 @@ class SignalTest(HeatTestCase):
         self.assertEqual(rsrc.state, (rsrc.CREATE, rsrc.COMPLETE))
 
         expected_url = "".join([
-            'http://127.0.0.1:8000/v1/signal/',
+            'http://server.test:8000/v1/signal/',
             'arn%3Aopenstack%3Aheat%3A%3Atest_tenant%3Astacks%2F',
             'test_stack%2FSTACKABCD1234%2Fresources%2F',
             'signal_handler?',
@@ -109,7 +111,7 @@ class SignalTest(HeatTestCase):
             'AWSAccessKeyId=4567&',
             'SignatureVersion=2&',
             'Signature=',
-            'MJIFh7LKCpVlK6pCxe2WfYrRsfO7FU3Wt%2BzQFo2rYSY%3D'])
+            'VW4NyvRO4WhQdsQ4rxl5JMUr0AlefHN6OLsRz9oZyls%3D'])
 
         self.assertEqual(expected_url, rsrc.FnGetAtt('AlarmUrl'))
         self.m.VerifyAll()
@@ -162,6 +164,7 @@ class SignalTest(HeatTestCase):
 
         rsrc = self.stack.resources['signal_handler']
         self.assertEqual(rsrc.state, (rsrc.CREATE, rsrc.COMPLETE))
+        self.assertTrue(rsrc.requires_deferred_auth)
 
         rsrc.signal(details=test_d)
 

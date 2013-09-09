@@ -20,7 +20,6 @@ from heat.tests import fakes
 from heat.tests.common import HeatTestCase
 from heat.tests import utils
 
-from heat.db import api as db_api
 from heat.engine import environment
 from heat.common import identifier
 from heat.common import template_format
@@ -196,15 +195,15 @@ class WaitCondMetadataUpdateTest(HeatTestCase):
         self.fc = fakes.FakeKeystoneClient()
         self.man = service.EngineService('a-host', 'a-topic')
         cfg.CONF.set_default('heat_waitcondition_server_url',
-                             'http://127.0.0.1:8000/v1/waitcondition')
+                             'http://server.test:8000/v1/waitcondition')
 
     # Note tests creating a stack should be decorated with @stack_delete_after
     # to ensure the stack is properly cleaned up
     def create_stack(self, stack_name='test_stack'):
         temp = template_format.parse(test_template_waitcondition)
         template = parser.Template(temp)
-        stack = parser.Stack(utils.dummy_context(), stack_name, template,
-                             disable_rollback=True)
+        ctx = utils.dummy_context()
+        stack = parser.Stack(ctx, stack_name, template, disable_rollback=True)
 
         self.stack_id = stack.store()
 
@@ -223,7 +222,9 @@ class WaitCondMetadataUpdateTest(HeatTestCase):
         wc.WaitConditionHandle.identifier().MultipleTimes().AndReturn(id)
 
         self.m.StubOutWithMock(scheduler.TaskRunner, '_sleep')
-        self.m.StubOutWithMock(db_api, 'user_creds_get')
+        self.m.StubOutWithMock(service.EngineService, '_load_user_creds')
+        service.EngineService._load_user_creds(
+            mox.IgnoreArg()).MultipleTimes().AndReturn(ctx)
 
         return stack
 
@@ -258,9 +259,8 @@ class WaitCondMetadataUpdateTest(HeatTestCase):
 
         scheduler.TaskRunner._sleep(mox.IsA(int)).WithSideEffects(check_empty)
         scheduler.TaskRunner._sleep(mox.IsA(int)).WithSideEffects(post_success)
-        db_api.user_creds_get(mox.IgnoreArg()).MultipleTimes().AndReturn(
-            self.stack.context.to_dict())
-        scheduler.TaskRunner._sleep(mox.IsA(int)).AndReturn(None)
+        scheduler.TaskRunner._sleep(mox.IsA(int)).MultipleTimes().AndReturn(
+            None)
 
         self.m.ReplayAll()
         self.stack.create()

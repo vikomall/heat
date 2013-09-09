@@ -15,9 +15,11 @@
 import itertools
 
 from heat.common import exception
+from heat.engine import dependencies
 from heat.engine import parser
 from heat.engine import resource
 from heat.engine import scheduler
+from heat.engine import template
 from heat.engine import environment
 from heat.openstack.common import uuidutils
 import heat.db.api as db_api
@@ -317,7 +319,7 @@ class ResourceTest(HeatTestCase):
         res.id = 'test_res_id'
         (res.action, res.status) = (res.INIT, res.DELETE)
         self.assertRaises(exception.ResourceFailure, res.create)
-        res.destroy()
+        scheduler.TaskRunner(res.destroy)()
         res.state_reset()
         scheduler.TaskRunner(res.create)()
         self.assertEqual((res.CREATE, res.COMPLETE), res.state)
@@ -338,7 +340,7 @@ class ResourceTest(HeatTestCase):
             utmpl, tmpl_diff, prop_diff).AndReturn(None)
         self.m.ReplayAll()
 
-        self.assertEqual(None, res.update(utmpl))
+        scheduler.TaskRunner(res.update, utmpl)()
         self.assertEqual((res.UPDATE, res.COMPLETE), res.state)
         self.m.VerifyAll()
 
@@ -358,7 +360,8 @@ class ResourceTest(HeatTestCase):
             utmpl, tmpl_diff, prop_diff).AndRaise(resource.UpdateReplace())
         self.m.ReplayAll()
         # should be re-raised so parser.Stack can handle replacement
-        self.assertRaises(resource.UpdateReplace, res.update, utmpl)
+        updater = scheduler.TaskRunner(res.update, utmpl)
+        self.assertRaises(resource.UpdateReplace, updater)
         self.m.VerifyAll()
 
     def test_update_fail_missing_req_prop(self):
@@ -372,7 +375,8 @@ class ResourceTest(HeatTestCase):
 
         utmpl = {'Type': 'GenericResourceType', 'Properties': {}}
 
-        self.assertRaises(exception.ResourceFailure, res.update, utmpl)
+        updater = scheduler.TaskRunner(res.update, utmpl)
+        self.assertRaises(exception.ResourceFailure, updater)
         self.assertEqual((res.UPDATE, res.FAILED), res.state)
 
     def test_update_fail_prop_typo(self):
@@ -385,7 +389,8 @@ class ResourceTest(HeatTestCase):
 
         utmpl = {'Type': 'GenericResourceType', 'Properties': {'Food': 'xyz'}}
 
-        self.assertRaises(exception.ResourceFailure, res.update, utmpl)
+        updater = scheduler.TaskRunner(res.update, utmpl)
+        self.assertRaises(exception.ResourceFailure, updater)
         self.assertEqual((res.UPDATE, res.FAILED), res.state)
 
     def test_update_not_implemented(self):
@@ -403,7 +408,8 @@ class ResourceTest(HeatTestCase):
         generic_rsrc.ResourceWithProps.handle_update(
             utmpl, tmpl_diff, prop_diff).AndRaise(NotImplemented)
         self.m.ReplayAll()
-        self.assertRaises(exception.ResourceFailure, res.update, utmpl)
+        updater = scheduler.TaskRunner(res.update, utmpl)
+        self.assertRaises(exception.ResourceFailure, updater)
         self.assertEqual((res.UPDATE, res.FAILED), res.state)
         self.m.VerifyAll()
 
@@ -559,6 +565,253 @@ class ResourceTest(HeatTestCase):
                          TestResource.resource_to_template(
                          'Test::Resource::resource')
                          )
+
+
+class ResourceDependenciesTest(HeatTestCase):
+    def setUp(self):
+        super(ResourceDependenciesTest, self).setUp()
+        utils.setup_dummy_db()
+
+        resource._register_class('GenericResourceType',
+                                 generic_rsrc.GenericResource)
+        resource._register_class('ResourceWithPropsType',
+                                 generic_rsrc.ResourceWithProps)
+
+        self.deps = dependencies.Dependencies()
+
+    def test_no_deps(self):
+        tmpl = template.Template({
+            'Resources': {
+                'foo': {'Type': 'GenericResourceType'},
+            }
+        })
+        stack = parser.Stack(None, 'test', tmpl)
+
+        res = stack['foo']
+        res.add_dependencies(self.deps)
+        graph = self.deps.graph()
+
+        self.assertIn(res, graph)
+
+    def test_ref(self):
+        tmpl = template.Template({
+            'Resources': {
+                'foo': {'Type': 'GenericResourceType'},
+                'bar': {
+                    'Type': 'ResourceWithPropsType',
+                    'Properties': {
+                        'Foo': {'Ref': 'foo'},
+                    }
+                }
+            }
+        })
+        stack = parser.Stack(None, 'test', tmpl)
+
+        res = stack['bar']
+        res.add_dependencies(self.deps)
+        graph = self.deps.graph()
+
+        self.assertIn(res, graph)
+        self.assertIn(stack['foo'], graph[res])
+
+    def test_ref_nested_dict(self):
+        tmpl = template.Template({
+            'Resources': {
+                'foo': {'Type': 'GenericResourceType'},
+                'bar': {
+                    'Type': 'ResourceWithPropsType',
+                    'Properties': {
+                        'Foo': {'Fn::Base64': {'Ref': 'foo'}},
+                    }
+                }
+            }
+        })
+        stack = parser.Stack(None, 'test', tmpl)
+
+        res = stack['bar']
+        res.add_dependencies(self.deps)
+        graph = self.deps.graph()
+
+        self.assertIn(res, graph)
+        self.assertIn(stack['foo'], graph[res])
+
+    def test_ref_nested_deep(self):
+        tmpl = template.Template({
+            'Resources': {
+                'foo': {'Type': 'GenericResourceType'},
+                'bar': {
+                    'Type': 'ResourceWithPropsType',
+                    'Properties': {
+                        'Foo': {'Fn::Join': [",", ["blarg",
+                                                   {'Ref': 'foo'},
+                                                   "wibble"]]},
+                    }
+                }
+            }
+        })
+        stack = parser.Stack(None, 'test', tmpl)
+
+        res = stack['bar']
+        res.add_dependencies(self.deps)
+        graph = self.deps.graph()
+
+        self.assertIn(res, graph)
+        self.assertIn(stack['foo'], graph[res])
+
+    def test_ref_fail(self):
+        tmpl = template.Template({
+            'Resources': {
+                'foo': {'Type': 'GenericResourceType'},
+                'bar': {
+                    'Type': 'ResourceWithPropsType',
+                    'Properties': {
+                        'Foo': {'Ref': 'baz'},
+                    }
+                }
+            }
+        })
+        ex = self.assertRaises(exception.InvalidTemplateReference,
+                               parser.Stack,
+                               None, 'test', tmpl)
+        self.assertIn('"baz" (in bar.Properties.Foo)', str(ex))
+
+    def test_getatt(self):
+        tmpl = template.Template({
+            'Resources': {
+                'foo': {'Type': 'GenericResourceType'},
+                'bar': {
+                    'Type': 'ResourceWithPropsType',
+                    'Properties': {
+                        'Foo': {'Fn::GetAtt': ['foo', 'bar']},
+                    }
+                }
+            }
+        })
+        stack = parser.Stack(None, 'test', tmpl)
+
+        res = stack['bar']
+        res.add_dependencies(self.deps)
+        graph = self.deps.graph()
+
+        self.assertIn(res, graph)
+        self.assertIn(stack['foo'], graph[res])
+
+    def test_getatt_nested_dict(self):
+        tmpl = template.Template({
+            'Resources': {
+                'foo': {'Type': 'GenericResourceType'},
+                'bar': {
+                    'Type': 'ResourceWithPropsType',
+                    'Properties': {
+                        'Foo': {'Fn::Base64': {'Fn::GetAtt': ['foo', 'bar']}},
+                    }
+                }
+            }
+        })
+        stack = parser.Stack(None, 'test', tmpl)
+
+        res = stack['bar']
+        res.add_dependencies(self.deps)
+        graph = self.deps.graph()
+
+        self.assertIn(res, graph)
+        self.assertIn(stack['foo'], graph[res])
+
+    def test_getatt_nested_deep(self):
+        tmpl = template.Template({
+            'Resources': {
+                'foo': {'Type': 'GenericResourceType'},
+                'bar': {
+                    'Type': 'ResourceWithPropsType',
+                    'Properties': {
+                        'Foo': {'Fn::Join': [",", ["blarg",
+                                                   {'Fn::GetAtt': ['foo',
+                                                                   'bar']},
+                                                   "wibble"]]},
+                    }
+                }
+            }
+        })
+        stack = parser.Stack(None, 'test', tmpl)
+
+        res = stack['bar']
+        res.add_dependencies(self.deps)
+        graph = self.deps.graph()
+
+        self.assertIn(res, graph)
+        self.assertIn(stack['foo'], graph[res])
+
+    def test_getatt_fail(self):
+        tmpl = template.Template({
+            'Resources': {
+                'foo': {'Type': 'GenericResourceType'},
+                'bar': {
+                    'Type': 'ResourceWithPropsType',
+                    'Properties': {
+                        'Foo': {'Fn::GetAtt': ['baz', 'bar']},
+                    }
+                }
+            }
+        })
+        ex = self.assertRaises(exception.InvalidTemplateReference,
+                               parser.Stack,
+                               None, 'test', tmpl)
+        self.assertIn('"baz" (in bar.Properties.Foo)', str(ex))
+
+    def test_getatt_fail_nested_deep(self):
+        tmpl = template.Template({
+            'Resources': {
+                'foo': {'Type': 'GenericResourceType'},
+                'bar': {
+                    'Type': 'ResourceWithPropsType',
+                    'Properties': {
+                        'Foo': {'Fn::Join': [",", ["blarg",
+                                                   {'Fn::GetAtt': ['foo',
+                                                                   'bar']},
+                                                   "wibble",
+                                                   {'Fn::GetAtt': ['baz',
+                                                                   'bar']}]]},
+                    }
+                }
+            }
+        })
+        ex = self.assertRaises(exception.InvalidTemplateReference,
+                               parser.Stack,
+                               None, 'test', tmpl)
+        self.assertIn('"baz" (in bar.Properties.Foo.Fn::Join[1][3])', str(ex))
+
+    def test_dependson(self):
+        tmpl = template.Template({
+            'Resources': {
+                'foo': {'Type': 'GenericResourceType'},
+                'bar': {
+                    'Type': 'GenericResourceType',
+                    'DependsOn': 'foo',
+                }
+            }
+        })
+        stack = parser.Stack(None, 'test', tmpl)
+
+        res = stack['bar']
+        res.add_dependencies(self.deps)
+        graph = self.deps.graph()
+
+        self.assertIn(res, graph)
+        self.assertIn(stack['foo'], graph[res])
+
+    def test_dependson_fail(self):
+        tmpl = template.Template({
+            'Resources': {
+                'foo': {
+                    'Type': 'GenericResourceType',
+                    'DependsOn': 'wibble',
+                }
+            }
+        })
+        ex = self.assertRaises(exception.InvalidTemplateReference,
+                               parser.Stack,
+                               None, 'test', tmpl)
+        self.assertIn('"wibble" (in foo)', str(ex))
 
 
 class MetadataTest(HeatTestCase):

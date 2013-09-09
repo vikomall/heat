@@ -30,6 +30,7 @@ from heat.engine.event import Event
 from heat.engine import environment
 from heat.common import exception
 from heat.common import identifier
+from heat.common import heat_keystoneclient as hkc
 from heat.engine import parameters
 from heat.engine import parser
 from heat.engine import properties
@@ -205,7 +206,13 @@ class EngineService(service.Service):
         stacks = db_api.stack_get_all_by_tenant(cnxt) or []
         return list(format_stack_details(stacks))
 
-    def _validate_mandatory_credentials(self, cnxt):
+    def _validate_deferred_auth_context(self, cnxt, stack):
+        if cfg.CONF.deferred_auth_method != 'password':
+            return
+
+        if not stack.requires_deferred_auth():
+            return
+
         if cnxt.username is None:
             raise exception.MissingCredentialError(required='X-Auth-User')
         if cnxt.password is None:
@@ -228,8 +235,6 @@ class EngineService(service.Service):
         """
         logger.info('template is %s' % template)
 
-        self._validate_mandatory_credentials(cnxt)
-
         def _stack_create(stack):
             # Create the stack, and create the periodic task if successful
             stack.create()
@@ -250,7 +255,14 @@ class EngineService(service.Service):
         stack = parser.Stack(cnxt, stack_name, tmpl,
                              env, **common_params)
 
+        self._validate_deferred_auth_context(cnxt, stack)
+
         stack.validate()
+
+        # Creates a trust and sets the trust_id and trustor_user_id in
+        # the current context, before we store it in stack.store()
+        # Does nothing if deferred_auth_method is 'password'
+        stack.clients.keystone().create_trust_context()
 
         stack_id = stack.store()
 
@@ -274,8 +286,6 @@ class EngineService(service.Service):
         """
         logger.info('template is %s' % template)
 
-        self._validate_mandatory_credentials(cnxt)
-
         # Get the database representation of the existing stack
         db_stack = self._get_stack(cnxt, stack_identity)
 
@@ -290,6 +300,7 @@ class EngineService(service.Service):
         updated_stack = parser.Stack(cnxt, stack_name, tmpl,
                                      env, **common_params)
 
+        self._validate_deferred_auth_context(cnxt, updated_stack)
         updated_stack.validate()
 
         self._start_in_thread(db_stack.id, current_stack.update, updated_stack)
@@ -383,6 +394,13 @@ class EngineService(service.Service):
         logger.info('deleting stack %s' % st.name)
 
         stack = parser.Stack.load(cnxt, stack=st)
+
+        # If we created a trust, delete it
+        # Note this is using the current request context, not the stored
+        # context, as it seems it's not possible to delete a trust with
+        # a token obtained via that trust.  This means that only the user
+        # who created the stack can delete it when using trusts atm.
+        stack.clients.keystone().delete_trust_context()
 
         # Kill any pending threads by calling ThreadGroup.stop()
         if st.id in self.stg:
@@ -529,8 +547,7 @@ class EngineService(service.Service):
         # but this happens because the keystone user associated with the
         # signal doesn't have permission to read the secret key of
         # the user associated with the cfn-credentials file
-        user_creds = db_api.user_creds_get(s.user_creds_id)
-        stack_context = context.RequestContext.from_dict(user_creds)
+        stack_context = self._load_user_creds(s.user_creds_id)
         stack = parser.Stack.load(stack_context, stack=s)
 
         if resource_name not in stack:
@@ -614,6 +631,15 @@ class EngineService(service.Service):
         stack = parser.Stack.load(cnxt, stack=s)
         self._start_in_thread(stack.id, _stack_resume, stack)
 
+    def _load_user_creds(self, creds_id):
+        user_creds = db_api.user_creds_get(creds_id)
+        stored_context = context.RequestContext.from_dict(user_creds)
+        # heat_keystoneclient populates the context with an auth_token
+        # either via the stored user/password or trust_id, depending
+        # on how deferred_auth_method is configured in the conf file
+        kc = hkc.KeystoneClient(stored_context)
+        return stored_context
+
     @request_context
     def metadata_update(self, cnxt, stack_identity,
                         resource_name, metadata):
@@ -634,8 +660,7 @@ class EngineService(service.Service):
         # but this happens because the keystone user associated with the
         # WaitCondition doesn't have permission to read the secret key of
         # the user associated with the cfn-credentials file
-        user_creds = db_api.user_creds_get(s.user_creds_id)
-        stack_context = context.RequestContext.from_dict(user_creds)
+        stack_context = self._load_user_creds(s.user_creds_id)
         refresh_stack = parser.Stack.load(stack_context, stack=s)
 
         # Refresh the metadata for all other resources, since we expect
@@ -664,8 +689,7 @@ class EngineService(service.Service):
             logger.error("Unable to retrieve stack %s for periodic task" %
                          sid)
             return
-        user_creds = db_api.user_creds_get(stack.user_creds_id)
-        stack_context = context.RequestContext.from_dict(user_creds)
+        stack_context = self._load_user_creds(stack.user_creds_id)
 
         # Get all watchrules for this stack and evaluate them
         try:
