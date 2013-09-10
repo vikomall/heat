@@ -35,14 +35,14 @@ parameters:
     description: admin password for the web server instances
     type: String
     default: Verybadpass_123
-    
+
   web_server_res_id:
-  description: resource id for the web server instances
-  type: String
+    description: resource id for the web server instances
+    type: String
 
   db_res_id:
-  description: resource id for the db instance
-  type: String
+    description: resource id for the db instance
+    type: String
 
   db_name:
     default: wordpress
