@@ -141,25 +141,9 @@ resources:
             Start-Process $$wpicmd -ArgumentList "/Install /Application:Wordpress@wp.app /MySQLPassword:${dbpassword} /AcceptEULA /Log:.\wpi.log"  -NoNewWindow -Wait
             $$env:userprofile = $$tmpprofile
           params:
-            dbhost: { get_attr: [ db, hostname ] }
             dbname: { get_param: db_name }
             dbuser: { get_param: db_username }
             dbpassword: { get_param: db_password }
-
-  db:
-    type: "Rackspace::Cloud::DBInstance"
-    properties:
-      InstanceName: { get_param: db_instance_name }
-      FlavorRef: { get_param: db_flavor }
-      VolumeSize: { get_param: db_volume_size }
-      resource_id: { get_param db_res_id }
-      Users:
-      - Name: { get_param: db_username }
-        Password: { get_param: db_password }
-        Databases:
-        - { get_param: db_name }
-      Databases:
-      - Name: { get_param: db_name }
 
 outputs:
 
