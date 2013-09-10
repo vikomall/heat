@@ -121,7 +121,7 @@ resources:
       flavor: { get_param: web_node_flavor }
       image: { get_param: image }
       adminpass: { get_param: web_server_password }
-      resid: { get_param web_server_res_id }
+      resid: { get_param: web_server_res_id }
       user_data:
         str_replace:
           template: |
