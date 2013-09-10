@@ -39,10 +39,12 @@ parameters:
   web_server_res_id:
     description: resource id for the web server instances
     type: String
+    default: badresid
 
   db_res_id:
     description: resource id for the db instance
     type: String
+    default: badresid
 
   db_name:
     default: wordpress
