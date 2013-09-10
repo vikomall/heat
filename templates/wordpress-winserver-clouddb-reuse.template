@@ -118,7 +118,6 @@ resources:
       name: { get_param: web_server_name }
       flavor: { get_param: web_node_flavor }
       image: { get_param: image }
-      use_existing_resource: True
       admin_pass: { get_param: web_server_password }
       resource_id: { get_param web_server_res_id }
       user_data:
@@ -153,7 +152,6 @@ resources:
       InstanceName: { get_param: db_instance_name }
       FlavorRef: { get_param: db_flavor }
       VolumeSize: { get_param: db_volume_size }
-      use_existing_resource: True
       resource_id: { get_param db_res_id }
       Users:
       - Name: { get_param: db_username }
