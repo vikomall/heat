@@ -120,8 +120,8 @@ resources:
       name: { get_param: web_server_name }
       flavor: { get_param: web_node_flavor }
       image: { get_param: image }
-      admin_pass: { get_param: web_server_password }
-      res_id: { get_param web_server_res_id }
+      adminpass: { get_param: web_server_password }
+      resid: { get_param web_server_res_id }
       user_data:
         str_replace:
           template: |
