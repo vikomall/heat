@@ -39,12 +39,10 @@ parameters:
   web_server_res_id:
     description: resource id for the web server instances
     type: String
-    default: badresid
 
   db_res_id:
     description: resource id for the db instance
     type: String
-    default: badresid
 
   db_name:
     default: wordpress
@@ -120,8 +118,9 @@ resources:
       name: { get_param: web_server_name }
       flavor: { get_param: web_node_flavor }
       image: { get_param: image }
-      adminpass: { get_param: web_server_password }
-      resid: { get_param: web_server_res_id }
+      use_existing_resource: True
+      admin_pass: { get_param: web_server_password }
+      resource_id: { get_param: web_server_res_id }
       user_data:
         str_replace:
           template: |
@@ -131,6 +130,7 @@ resources:
             $$wc.DownloadFile($$source, $$destination)
             Start-Process msiexec -ArgumentList "/i webpi.msi /qn"  -NoNewWindow -Wait
             echo "AppPath[@]Default Web Site/wordpress" > wp.app
+            echo "DbServer[@]${dbhost}" >> wp.app
             echo "DbName[@]${dbname}" >> wp.app
             echo "DbUsername[@]${dbuser}" >> wp.app
             echo "DbPassword[@]${dbpassword}" >> wp.app
@@ -142,9 +142,26 @@ resources:
             Start-Process $$wpicmd -ArgumentList "/Install /Application:Wordpress@wp.app /MySQLPassword:${dbpassword} /AcceptEULA /Log:.\wpi.log"  -NoNewWindow -Wait
             $$env:userprofile = $$tmpprofile
           params:
+            dbhost: { get_attr: [ db, hostname ] }
             dbname: { get_param: db_name }
             dbuser: { get_param: db_username }
             dbpassword: { get_param: db_password }
+
+  db:
+    type: "Rackspace::Cloud::DBInstance"
+    properties:
+      InstanceName: { get_param: db_instance_name }
+      FlavorRef: { get_param: db_flavor }
+      VolumeSize: { get_param: db_volume_size }
+      use_existing_resource: True
+      resource_id: { get_param: db_res_id }
+      Users:
+      - Name: { get_param: db_username }
+        Password: { get_param: db_password }
+        Databases:
+        - { get_param: db_name }
+      Databases:
+      - Name: { get_param: db_name }
 
 outputs:
 
