@@ -119,7 +119,7 @@ resources:
       flavor: { get_param: web_node_flavor }
       image: { get_param: image }
       admin_pass: { get_param: web_server_password }
-      resource_id: { get_param web_server_res_id }
+      res_id: { get_param web_server_res_id }
       user_data:
         str_replace:
           template: |
@@ -129,7 +129,6 @@ resources:
             $$wc.DownloadFile($$source, $$destination)
             Start-Process msiexec -ArgumentList "/i webpi.msi /qn"  -NoNewWindow -Wait
             echo "AppPath[@]Default Web Site/wordpress" > wp.app
-            echo "DbServer[@]${dbhost}" >> wp.app
             echo "DbName[@]${dbname}" >> wp.app
             echo "DbUsername[@]${dbuser}" >> wp.app
             echo "DbPassword[@]${dbpassword}" >> wp.app
