@@ -23,7 +23,7 @@ import cmd
 #from impacket import version
 from impacket.smbconnection import *
 #from impacket.dcerpc import dcerpc_v4
-#from impacket.dcerpc import dcerpc
+from impacket.dcerpc import dcerpc
 #from impacket.dcerpc import srvsvc
 #from impacket.dcerpc import svcctl
 from impacket.dcerpc import transport
