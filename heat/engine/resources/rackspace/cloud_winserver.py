@@ -25,6 +25,7 @@ from multiprocessing import Queue
 import novaclient.exceptions as novaexception
 
 from heat.common import exception
+from heat.engine.resources import nova_utils
 from heat.engine.resources.rackspace import rackspace_resource
 from heat.openstack.common import log as logging
 
@@ -181,11 +182,11 @@ class WinServer(rackspace_resource.RackspaceResource):
         logger.debug("Calling nova().images.list()")
         return [im.name for im in self.nova().images.list()]
 
-    @property
-    def flavors(self):
-        """Get the flavors from the API."""
-        logger.debug("Calling nova().flavors.list()")
-        return [flavor.id for flavor in self.nova().flavors.list()]
+    #@property
+    #def flavors(self):
+        #"""Get the flavors from the API."""
+        #logger.debug("Calling nova().flavors.list()")
+        #return [flavor.id for flavor in self.nova().flavors.list()]
 
     def handle_create(self):
         '''
@@ -195,6 +196,7 @@ class WinServer(rackspace_resource.RackspaceResource):
         serverinstancename = self.properties['name']
         flavor = self.properties['flavor']
         image = self.properties['image']
+        flavor_id = nova_utils.get_flavor_id(self.nova(), flavor)
 
         # create Windows server instance
         logger.info("Creating Windows cloud server")
@@ -210,7 +212,7 @@ class WinServer(rackspace_resource.RackspaceResource):
         instance = self.nova().servers.create(
             serverinstancename,
             imageRef,
-            flavor,
+            flavor_id,
             files=files)
         if instance is not None:
             self.resource_id_set(instance.id)
@@ -325,10 +327,10 @@ class WinServer(rackspace_resource.RackspaceResource):
         # check validity of given image
         if self.properties['image'] not in self.images:
             return {'Error': 'Image not found.'}
-
-        # check validity of gvien flavor
-        if self.properties['flavor'] not in self.flavors:
-            return {'Error': "flavor not found."}
+        # TODO(Vijendar):
+        ## check validity of gvien flavor
+        #if self.properties['flavor'] not in self.flavors:
+            #return {'Error': "flavor not found."}
 
     def _resolve_attribute(self, name):
         if name == 'PrivateIp':
