@@ -83,7 +83,7 @@ def get_image_id(nova_client, image_identifier):
     return image_id
 
 
-def get_flavor_id(nova_client, flavor):
+def get_flavor_id(nova_client, flavor_or_flavor_id):
     '''
     Get the id for the specified flavor name.
 
@@ -95,7 +95,11 @@ def get_flavor_id(nova_client, flavor):
     flavor_id = None
     flavor_list = nova_client.flavors.list()
     for o in flavor_list:
-        if o.name == flavor:
+        if o.name == flavor_or_flavor_id:
+            flavor_id = o.id
+            break
+        # check if the given flavor is actually a flavor id
+        if o.id == flavor_or_flavor_id:
             flavor_id = o.id
             break
     if flavor_id is None:
