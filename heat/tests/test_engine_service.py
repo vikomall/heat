@@ -34,6 +34,7 @@ from heat.engine import parser
 from heat.engine.resource import _register_class
 from heat.engine import service
 from heat.engine.properties import Properties
+from heat.engine import resource as res
 from heat.engine.resources import instance as instances
 from heat.engine.resources import nova_utils
 from heat.engine import resource as rsrs
@@ -276,12 +277,12 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
     def setUp(self):
         super(StackServiceCreateUpdateDeleteTest, self).setUp()
         utils.setup_dummy_db()
+        utils.reset_dummy_db()
         self.ctx = utils.dummy_context()
 
         self.man = service.EngineService('a-host', 'a-topic')
 
-    def test_stack_create(self):
-        stack_name = 'service_create_test_stack'
+    def _test_stack_create(self, stack_name):
         params = {'foo': 'bar'}
         template = '{ "Template": "data" }'
 
@@ -320,6 +321,23 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
         self.assertTrue(isinstance(result, dict))
         self.assertTrue(result['stack_id'])
         self.m.VerifyAll()
+
+    def test_stack_create(self):
+        stack_name = 'service_create_test_stack'
+        self._test_stack_create(stack_name)
+
+    def test_stack_create_equals_max_per_tenant(self):
+        cfg.CONF.set_override('max_stacks_per_tenant', 1)
+        stack_name = 'service_create_test_stack_equals_max'
+        self._test_stack_create(stack_name)
+
+    def test_stack_create_exceeds_max_per_tenant(self):
+        cfg.CONF.set_override('max_stacks_per_tenant', 0)
+        stack_name = 'service_create_test_stack_exceeds_max'
+        exc = self.assertRaises(exception.RequestLimitExceeded,
+                                self._test_stack_create, stack_name)
+        self.assertIn("You have reached the maximum stacks per tenant",
+                      str(exc))
 
     def test_stack_create_verify_err(self):
         stack_name = 'service_create_verify_err_test_stack'
@@ -412,6 +430,65 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
                                template, params, None, {})
         self.assertEqual(
             'Missing required credential: X-Auth-User', ex.message)
+
+    def test_stack_create_total_resources_equals_max(self):
+        stack_name = 'service_create_stack_total_resources_equals_max'
+        params = {}
+        res._register_class('GenericResourceType',
+                            generic_rsrc.GenericResource)
+        tpl = {'Resources': {
+               'A': {'Type': 'GenericResourceType'},
+               'B': {'Type': 'GenericResourceType'},
+               'C': {'Type': 'GenericResourceType'}}}
+
+        template = parser.Template(tpl)
+        stack = parser.Stack(self.ctx, stack_name, template,
+                             environment.Environment({}))
+
+        self.m.StubOutWithMock(parser, 'Template')
+        self.m.StubOutWithMock(environment, 'Environment')
+        self.m.StubOutWithMock(parser, 'Stack')
+
+        parser.Template(template, files=None).AndReturn(stack.t)
+        environment.Environment(params).AndReturn(stack.env)
+        parser.Stack(self.ctx, stack.name,
+                     stack.t,
+                     stack.env).AndReturn(stack)
+
+        self.m.StubOutClassWithMocks(hkc.kc, "Client")
+        mock_ks_client = hkc.kc.Client(
+            auth_url=mox.IgnoreArg(),
+            tenant_name='test_tenant',
+            token='abcd1234')
+        mock_ks_client.authenticate().AndReturn(True)
+
+        self.m.StubOutWithMock(hkc.KeystoneClient, 'create_trust_context')
+        hkc.KeystoneClient.create_trust_context().AndReturn(None)
+
+        self.m.ReplayAll()
+
+        cfg.CONF.set_override('max_resources_per_stack', 3)
+
+        result = self.man.create_stack(self.ctx, stack_name, template, params,
+                                       None, {})
+        self.m.VerifyAll()
+        self.assertEquals(stack.identifier(), result)
+        self.assertEquals(3, stack.total_resources())
+
+    def test_stack_create_total_resources_exceeds_max(self):
+        stack_name = 'service_create_stack_total_resources_exceeds_max'
+        params = {}
+        res._register_class('GenericResourceType',
+                            generic_rsrc.GenericResource)
+        tpl = {'Resources': {
+               'A': {'Type': 'GenericResourceType'},
+               'B': {'Type': 'GenericResourceType'},
+               'C': {'Type': 'GenericResourceType'}}}
+        template = parser.Template(tpl)
+        cfg.CONF.set_override('max_resources_per_stack', 2)
+        self.assertRaises(exception.StackResourceLimitExceeded,
+                          self.man.create_stack, self.ctx, stack_name,
+                          template, params, None, {})
 
     def test_stack_validate(self):
         stack_name = 'service_create_test_validate'
@@ -517,6 +594,76 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
         self.assertTrue(isinstance(result, dict))
         self.assertTrue(result['stack_id'])
         self.m.VerifyAll()
+
+    def test_stack_update_equals(self):
+        stack_name = 'test_stack_update_equals_resource_limit'
+        params = {}
+        res._register_class('GenericResourceType',
+                            generic_rsrc.GenericResource)
+        tpl = {'Resources': {
+               'A': {'Type': 'GenericResourceType'},
+               'B': {'Type': 'GenericResourceType'},
+               'C': {'Type': 'GenericResourceType'}}}
+
+        template = parser.Template(tpl)
+
+        old_stack = parser.Stack(self.ctx, stack_name, template)
+        sid = old_stack.store()
+        s = db_api.stack_get(self.ctx, sid)
+
+        stack = parser.Stack(self.ctx, stack_name, template)
+
+        self.m.StubOutWithMock(parser, 'Stack')
+        self.m.StubOutWithMock(parser.Stack, 'load')
+        parser.Stack.load(self.ctx, stack=s).AndReturn(old_stack)
+
+        self.m.StubOutWithMock(parser, 'Template')
+        self.m.StubOutWithMock(environment, 'Environment')
+
+        parser.Template(template, files=None).AndReturn(stack.t)
+        environment.Environment(params).AndReturn(stack.env)
+        parser.Stack(self.ctx, stack.name,
+                     stack.t, stack.env).AndReturn(stack)
+
+        self.m.StubOutWithMock(stack, 'validate')
+        stack.validate().AndReturn(None)
+
+        self.m.StubOutWithMock(threadgroup, 'ThreadGroup')
+        threadgroup.ThreadGroup().AndReturn(DummyThreadGroup())
+
+        self.m.ReplayAll()
+
+        cfg.CONF.set_override('max_resources_per_stack', 3)
+
+        result = self.man.update_stack(self.ctx, old_stack.identifier(),
+                                       template, params, None, {})
+        self.assertEqual(old_stack.identifier(), result)
+        self.assertTrue(isinstance(result, dict))
+        self.assertTrue(result['stack_id'])
+        self.assertEquals(3, old_stack.root_stack.total_resources())
+        self.m.VerifyAll()
+
+    def test_stack_update_exceeds_resource_limit(self):
+        stack_name = 'test_stack_update_exceeds_resource_limit'
+        params = {}
+        res._register_class('GenericResourceType',
+                            generic_rsrc.GenericResource)
+        tpl = {'Resources': {
+               'A': {'Type': 'GenericResourceType'},
+               'B': {'Type': 'GenericResourceType'},
+               'C': {'Type': 'GenericResourceType'}}}
+
+        template = parser.Template(tpl)
+
+        old_stack = parser.Stack(self.ctx, stack_name, template)
+        sid = old_stack.store()
+        s = db_api.stack_get(self.ctx, sid)
+
+        cfg.CONF.set_override('max_resources_per_stack', 2)
+
+        self.assertRaises(exception.StackResourceLimitExceeded,
+                          self.man.update_stack, self.ctx,
+                          old_stack.identifier(), template, params, None, {})
 
     def test_stack_update_verify_err(self):
         stack_name = 'service_update_verify_err_test_stack'

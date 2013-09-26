@@ -157,6 +157,7 @@ class CeilometerAlarmTest(HeatTestCase):
         snippet['Properties']['evaluation_periods'] = '2'
         snippet['Properties']['period'] = '90'
         snippet['Properties']['enabled'] = 'true'
+        snippet['Properties']['repeat_actions'] = True
         snippet['Properties']['statistic'] = 'max'
         snippet['Properties']['threshold'] = '39'
         snippet['Properties']['insufficient_data_actions'] = []
@@ -214,8 +215,8 @@ class CeilometerAlarmTest(HeatTestCase):
         self.stack.create()
         rsrc = self.stack['MEMAlarmHigh']
         scheduler.TaskRunner(rsrc.suspend)()
-        self.assertTrue((rsrc.SUSPEND, rsrc.COMPLETE), rsrc.state)
+        self.assertEqual((rsrc.SUSPEND, rsrc.COMPLETE), rsrc.state)
         scheduler.TaskRunner(rsrc.resume)()
-        self.assertTrue((rsrc.RESUME, rsrc.COMPLETE), rsrc.state)
+        self.assertEqual((rsrc.RESUME, rsrc.COMPLETE), rsrc.state)
 
         self.m.VerifyAll()

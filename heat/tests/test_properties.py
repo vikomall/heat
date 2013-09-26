@@ -952,7 +952,7 @@ class PropertyTest(testtools.TestCase):
     def test_list_schema_int_bad_data(self):
         list_schema = {'Type': 'Integer'}
         p = properties.Property({'Type': 'List', 'Schema': list_schema})
-        self.assertRaises(TypeError, p.validate_data, [42, 'fish'])
+        self.assertRaises(ValueError, p.validate_data, [42, 'fish'])
 
 
 class PropertiesTest(testtools.TestCase):
@@ -986,7 +986,7 @@ class PropertiesTest(testtools.TestCase):
         self.assertRaises(ValueError, self.props.get, 'required_int')
 
     def test_integer_bad(self):
-        self.assertRaises(TypeError, self.props.get, 'bad_int')
+        self.assertRaises(ValueError, self.props.get, 'bad_int')
 
     def test_missing(self):
         self.assertEqual(self.props['missing'], None)
@@ -1075,6 +1075,16 @@ class PropertiesTest(testtools.TestCase):
         schema = {'foo': {'Type': 'List', 'Default': ['one', 'two']}}
         props = properties.Properties(schema, {'foo': None})
         self.assertEqual(['one', 'two'], props['foo'])
+
+    def test_bad_resolver(self):
+        schema = {'foo': {'Type': 'String', 'Default': 'bar'}}
+
+        def bad_resolver(prop):
+            raise Exception('resolution failed!')
+
+        props = properties.Properties(schema, {'foo': 'baz'}, bad_resolver)
+        err = self.assertRaises(ValueError, props.get, 'foo')
+        self.assertEqual('foo resolution failed!', str(err))
 
     def test_schema_from_params(self):
         params_snippet = {
@@ -1356,8 +1366,8 @@ class PropertiesValidationTest(testtools.TestCase):
         param_expected = {'foo': {'Type': 'Json'}}
         (parameters, props) = \
             properties.Properties.schema_to_parameters_and_properties(schema)
-        self.assertEquals(param_expected, parameters)
-        self.assertEquals(prop_expected, props)
+        self.assertEqual(param_expected, parameters)
+        self.assertEqual(prop_expected, props)
 
     def test_schema_to_template_nested_map_list_map_schema(self):
         key_schema = {'bar': {'Type': 'Number'}}
@@ -1372,8 +1382,8 @@ class PropertiesValidationTest(testtools.TestCase):
         param_expected = {'foo': {'Type': 'CommaDelimitedList'}}
         (parameters, props) = \
             properties.Properties.schema_to_parameters_and_properties(schema)
-        self.assertEquals(param_expected, parameters)
-        self.assertEquals(prop_expected, props)
+        self.assertEqual(param_expected, parameters)
+        self.assertEqual(prop_expected, props)
 
     def test_schema_invalid_parameters_stripped(self):
         schema = {'foo': {'Type': 'String',
@@ -1385,5 +1395,5 @@ class PropertiesValidationTest(testtools.TestCase):
 
         (parameters, props) = \
             properties.Properties.schema_to_parameters_and_properties(schema)
-        self.assertEquals(param_expected, parameters)
-        self.assertEquals(prop_expected, props)
+        self.assertEqual(param_expected, parameters)
+        self.assertEqual(prop_expected, props)

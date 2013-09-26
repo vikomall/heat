@@ -43,7 +43,9 @@ neutron_template = '''
     "network": {
       "Type": "OS::Neutron::Net",
       "Properties": {
-        "name": "the_network"
+        "name": "the_network",
+        "tenant_id": "c1210485b2424d48804aad5d39c61b8f",
+        "shared": true
       }
     },
     "unnamed_network": {
@@ -59,6 +61,7 @@ neutron_template = '''
       "Type": "OS::Neutron::Subnet",
       "Properties": {
         "network_id": { "Ref" : "network" },
+        "tenant_id": "c1210485b2424d48804aad5d39c61b8f",
         "ip_version": 4,
         "cidr": "10.0.3.0/24",
         "allocation_pools": [{"start": "10.0.3.20", "end": "10.0.3.150"}],
@@ -225,13 +228,17 @@ class NeutronNetTest(HeatTestCase):
         clients.OpenStackClients.keystone().AndReturn(
             fakes.FakeKeystoneClient())
         neutronclient.Client.create_network({
-            'network': {'name': u'the_network', 'admin_state_up': True}
+            'network': {
+                'name': u'the_network',
+                'admin_state_up': True,
+                'tenant_id': 'c1210485b2424d48804aad5d39c61b8f',
+                'shared': True}
         }).AndReturn({"network": {
             "status": "BUILD",
             "subnets": [],
             "name": "name",
             "admin_state_up": False,
-            "shared": False,
+            "shared": True,
             "tenant_id": "c1210485b2424d48804aad5d39c61b8f",
             "id": "fc68ea2c-b60b-4b4f-bd82-94ec81110766"
         }})
@@ -243,7 +250,7 @@ class NeutronNetTest(HeatTestCase):
             "subnets": [],
             "name": "name",
             "admin_state_up": False,
-            "shared": False,
+            "shared": True,
             "tenant_id": "c1210485b2424d48804aad5d39c61b8f",
             "id": "fc68ea2c-b60b-4b4f-bd82-94ec81110766"
         }})
@@ -255,7 +262,7 @@ class NeutronNetTest(HeatTestCase):
             "subnets": [],
             "name": "name",
             "admin_state_up": False,
-            "shared": False,
+            "shared": True,
             "tenant_id": "c1210485b2424d48804aad5d39c61b8f",
             "id": "fc68ea2c-b60b-4b4f-bd82-94ec81110766"
         }})
@@ -271,7 +278,7 @@ class NeutronNetTest(HeatTestCase):
             "subnets": [],
             "name": "name",
             "admin_state_up": False,
-            "shared": False,
+            "shared": True,
             "tenant_id": "c1210485b2424d48804aad5d39c61b8f",
             "id": "fc68ea2c-b60b-4b4f-bd82-94ec81110766"
         }})
@@ -283,7 +290,7 @@ class NeutronNetTest(HeatTestCase):
             "subnets": [],
             "name": "name",
             "admin_state_up": False,
-            "shared": False,
+            "shared": True,
             "tenant_id": "c1210485b2424d48804aad5d39c61b8f",
             "id": "fc68ea2c-b60b-4b4f-bd82-94ec81110766"
         }})
@@ -320,14 +327,8 @@ class NeutronNetTest(HeatTestCase):
 
         self.assertEqual(None, rsrc.FnGetAtt('status'))
         self.assertEqual('ACTIVE', rsrc.FnGetAtt('status'))
-        try:
-            rsrc.FnGetAtt('Foo')
-            raise Exception('Expected InvalidTemplateAttribute')
-        except exception.InvalidTemplateAttribute:
-            pass
-
-        self.assertEqual('fc68ea2c-b60b-4b4f-bd82-94ec81110766',
-                         rsrc.FnGetAtt('id'))
+        self.assertRaises(
+            exception.InvalidTemplateAttribute, rsrc.FnGetAtt, 'Foo')
 
         self.assertRaises(resource.UpdateReplace,
                           rsrc.handle_update, {}, {}, {})
@@ -368,7 +369,8 @@ class NeutronSubnetTest(HeatTestCase):
                 'allocation_pools': [
                     {'start': u'10.0.3.20', 'end': u'10.0.3.150'}],
                 'ip_version': 4,
-                'cidr': u'10.0.3.0/24'
+                'cidr': u'10.0.3.0/24',
+                'tenant_id': 'c1210485b2424d48804aad5d39c61b8f'
             }
         }).AndReturn({
             "subnet": {
@@ -465,7 +467,8 @@ class NeutronSubnetTest(HeatTestCase):
                     {'start': u'10.0.3.20', 'end': u'10.0.3.150'}],
                 'ip_version': 4,
                 'enable_dhcp': False,
-                'cidr': u'10.0.3.0/24'
+                'cidr': u'10.0.3.0/24',
+                'tenant_id': 'c1210485b2424d48804aad5d39c61b8f'
             }
         }).AndReturn({
             "subnet": {
@@ -866,14 +869,11 @@ class NeutronFloatingIPTest(HeatTestCase):
 
         self.assertEqual(None, p.FnGetAtt('status'))
         self.assertEqual('ACTIVE', p.FnGetAtt('status'))
-        try:
-            p.FnGetAtt('Foo')
-            raise Exception('Expected InvalidTemplateAttribute')
-        except exception.InvalidTemplateAttribute:
-            pass
+        self.assertRaises(
+            exception.InvalidTemplateAttribute, p.FnGetAtt, 'Foo')
 
         self.assertEqual('fc68ea2c-b60b-4b4f-bd82-94ec81110766',
-                         p.FnGetAtt('id'))
+                         p.resource_id)
 
         self.assertRaises(resource.UpdateReplace,
                           p.handle_update, {}, {}, {})

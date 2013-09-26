@@ -19,6 +19,9 @@ import json
 from oslo.config import cfg
 import webob
 
+cfg.CONF.import_opt('max_resources_per_stack', 'heat.common.config')
+cfg.CONF.import_opt('max_stacks_per_tenant', 'heat.common.config')
+
 from heat.openstack.common import timeutils
 from heat.common import context
 from heat.db import api as db_api
@@ -36,6 +39,7 @@ from heat.engine import parser
 from heat.engine import properties
 from heat.engine import resource
 from heat.engine import resources
+from heat.engine import template as tpl
 from heat.engine import watchrule
 
 from heat.openstack.common import log as logging
@@ -246,8 +250,16 @@ class EngineService(service.Service):
 
         if db_api.stack_get_by_name(cnxt, stack_name):
             raise exception.StackExists(stack_name=stack_name)
+        tenant_limit = cfg.CONF.max_stacks_per_tenant
+        if db_api.stack_count_all_by_tenant(cnxt) >= tenant_limit:
+            message = _("You have reached the maximum stacks per tenant, %d."
+                        " Please delete some stacks.") % tenant_limit
+            raise exception.RequestLimitExceeded(message=message)
 
         tmpl = parser.Template(template, files=files)
+
+        if len(tmpl[tpl.RESOURCES]) > cfg.CONF.max_resources_per_stack:
+            raise exception.StackResourceLimitExceeded()
 
         # Extract the common query parameters
         common_params = api.extract_args(args)
@@ -294,6 +306,8 @@ class EngineService(service.Service):
         # Now parse the template and any parameters for the updated
         # stack definition.
         tmpl = parser.Template(template, files=files)
+        if len(tmpl[tpl.RESOURCES]) > cfg.CONF.max_resources_per_stack:
+            raise exception.StackResourceLimitExceeded()
         stack_name = current_stack.name
         common_params = api.extract_args(args)
         env = environment.Environment(params)
