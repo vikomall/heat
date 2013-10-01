@@ -143,6 +143,14 @@ class WinServer(rackspace_resource.RackspaceResource):
         self._server = None
         self._process = None
         self._queue = None
+        signal.signal(signal.SIGTERM, self._exithandler)
+
+    def _exithandler(self, singnum, frame):
+        try:
+            if self._process is not None and self._process.is_alive():
+                self._process.terminate()
+        except:
+            pass
 
     @property
     def server(self):
