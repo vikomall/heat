@@ -28,7 +28,7 @@ import novaclient.exceptions as novaexception
 
 from heat.common import exception
 from heat.engine.resources import nova_utils
-from heat.engine.resources.rackspace import rackspace_resource
+from . import rackspace_resource
 from heat.openstack.common import log as logging
 
 logger = logging.getLogger(__name__)
