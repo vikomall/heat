@@ -15,10 +15,14 @@
 
 import os
 import shlex
+import signal
 import socket
 import subprocess
 import tempfile
 import time
+
+from multiprocessing import Process
+from multiprocessing import Queue
 
 import novaclient.exceptions as novaexception
 
@@ -28,6 +32,59 @@ from . import rackspace_resource
 from heat.openstack.common import log as logging
 
 logger = logging.getLogger(__name__)
+
+
+class Alarm(Exception):
+    pass
+
+
+def alarm_handler(signum, frame):
+    raise Alarm
+
+
+def run_command(cmd, lines=None, timeout=None):
+    p = subprocess.Popen(shlex.split(cmd),
+                         close_fds=True,
+                         stdin=subprocess.PIPE,
+                         stdout=subprocess.PIPE,
+                         stderr=subprocess.STDOUT)
+
+    signal.signal(signal.SIGALRM, alarm_handler)
+    if timeout:
+        signal.alarm(timeout)
+
+    try:
+        if lines:
+            (stdout, stderr) = p.communicate(input=lines)
+
+        status = p.wait()
+        signal.alarm(0)
+    except Alarm:
+        logger.warning("Timeout running post-build process")
+        status = 1
+        stdout = ''
+        p.kill()
+
+    if lines:
+        output = stdout
+
+        # Remove this cruft from Windows build output
+        output = output.replace('\x08', '')
+        output = output.replace('\r', '')
+
+    else:
+        output = p.stdout.read().strip()
+
+    return (status, output)
+
+
+def get_wrapper_batch_file(command):
+    batch_file_command = "powershell.exe -executionpolicy unrestricted " \
+        "-command .\%s" % command
+    batch_file = tempfile.NamedTemporaryFile(suffix=".bat", delete=False)
+    batch_file.write(batch_file_command)
+    batch_file.close()
+    return batch_file.name
 
 
 def wait_net_service(server, port, timeout=None):
@@ -70,48 +127,20 @@ def wait_net_service(server, port, timeout=None):
             return True
 
 
-class PsexecWrapper(object):
-    def __init__(self, username, password, address, filename,
-                 wrapper_batch_file, path="C:\\Windows"):
-        psexec = "%s/psexec.py" % os.path.dirname(__file__)
-        cmd_string = "nice python %s -path '%s' '%s':'%s'@'%s' " \
-            "'c:\\windows\\sysnative\\cmd'"
-        self._cmd = cmd_string % (psexec, path, username, password, address)
-        self._lines = "put %s\nput %s\n%s\nexit\n" % (
-            filename, wrapper_batch_file, os.path.basename(wrapper_batch_file))
-        self._psexec = None
+def psexec_run_script(username, password, address, filename,
+                      command, path="C:\\Windows"):
+    psexec = "%s/psexec.py" % os.path.dirname(__file__)
+    psscript = "%s/download_wpi.ps1" % os.path.dirname(__file__)
+    cmd_string = "nice python %s -path '%s' '%s':'%s'@'%s' " \
+        "'c:\\windows\\sysnative\\cmd'"
+    cmd = cmd_string % (psexec, path, username, password, address)
 
-    def run_cmd(self):
-        self._psexec = subprocess.Popen(shlex.split(self._cmd),
-                                        close_fds=True,
-                                        stdin=subprocess.PIPE,
-                                        stdout=subprocess.PIPE,
-                                        stderr=subprocess.STDOUT)
+    # create a batch file that launches given powershell script
+    wrapper_batch_file = get_wrapper_batch_file(command)
+    lines = "put %s\nput %s\n%s\nexit\n" % (
+        filename, wrapper_batch_file, os.path.basename(wrapper_batch_file))
 
-        self._psexec.stdin.write(self._lines)
-
-    def is_alive(self):
-        return self._psexec is not None and self._psexec.poll() is None
-
-    def exit_code(self):
-        self._raise_if_proc_running()
-        return self._psexec.returncode
-
-    def std_out(self):
-        self._raise_if_proc_running()
-        return self._psexec.stdout.readlines()
-
-    def std_err(self):
-        self._raise_if_proc_running()
-        return self._psexec.stderr.readlines()
-
-    def kill(self):
-        if not self._psexec and self._psexec.poll() is None:
-            self._psexec.kill()
-
-    def _raise_if_proc_running(self):
-        if self._psexec.poll() is None:
-            raise exception.Error("process is still running")
+    return run_command(cmd, lines=lines, timeout=1800)
 
 
 class WinServer(rackspace_resource.RackspaceResource):
@@ -155,14 +184,8 @@ class WinServer(rackspace_resource.RackspaceResource):
         self._public_ip = None
         self._server = None
         self._process = None
-        self._last_time_stamp = None
-        self._retry_count = 0
-        self._max_retry_limit = 10
-        self._timeout_start = None
-        self._server_up = False
-        self._wait_for_server_retry = 0
-        self._ps_script = None
-        self._tmp_batch_file = None
+        self._queue = None
+        signal.signal(signal.SIGTERM, self._exithandler)
 
     def _exithandler(self, singnum, frame):
         try:
@@ -246,126 +269,97 @@ class WinServer(rackspace_resource.RackspaceResource):
 
         return instance
 
-    def _is_time_to_get_status(self):
-        if self._last_time_stamp is None:
-            self._last_time_stamp = time.time()
-            return True
-
-        # For now get status for every 30secs
-        if time.time() - self._last_time_stamp > 30:
-            self._last_time_stamp = time.time()
-            return True
-
-        return False
-
     def check_create_complete(self, instance):
         '''
         Check if cloud Windows server instance creation is complete.
         '''
-        if not self._is_time_to_get_status():
-            return False
-
-        try:
-            instance.get()  # get updated attributes
-        except Exception as ex:
-            if self._retry_count < self._max_retry_limit:
-                logger.info("Exception found in get status...going to retry.")
-                logger.info("Exception:%s res_id:%s" % (ex, self.resource_id))
-                self._retry_count += 1
-                return False
-            raise ex
-
+        instance.get()  # get ted attributes
         if instance.status == 'ERROR':
-            if self._retry_count < self._max_retry_limit:
-                logger.info("Cloud server returned ERROR...going to retry.")
-                self._retry_count += 1
-                return False
-
-            msg = "Retried %s times." % self._retry_count
             instance.delete()
-            raise exception.Error("Cloud server creation failed.%s" % msg)
+            raise exception.Error("WinServer instance creation failed.")
 
         if instance.status != 'ACTIVE':
             return False
-
-        if not self._server_up:
-            if not self._timeout_start:
-                self._timeout_start = time.time()
-            if wait_net_service(self.public_ip, 445, timeout=5):
-                self._server_up = True
-
-        if not self._server_up:
-            if time.time() - self._timeout_start >= 900:
-                raise exception.Error("Server is not active... timedout!")
 
         if self._process is None:
             logger.info("Windows server %s created (flavor:%s, image:%s)" %
                         (instance.name,
                          instance.flavor['id'],
                          instance.image['id']))
-            self._timeout_start = time.time()
             logger.info("Spawning a process to begin installation steps.")
-            # create a powershellscript with given user_data
-            self._ps_script = self._userdata_ps_script(
-                self.properties['user_data'])
-            # create a batch file that launches given powershell script
-            self._tmp_batch_file = self._wrapper_batch_script(
-                os.path.basename(self._ps_script))
-
+            self._queue = Queue()
             publicip = self.public_ip
-            adminPass = instance.adminPass
-            self._process = PsexecWrapper("Administrator", adminPass,
-                                          self.public_ip, self._ps_script,
-                                          self._tmp_batch_file, "C:\\Windows")
-            self._process.run_cmd()
+            self._process = Process(
+                target=self._configure_server,
+                args=(instance.adminPass, self.properties['user_data'],
+                      self.public_ip, self._queue))
+            self._process.start()
             return False
-
-        if time.time() - self._timeout_start > 3600:
-            logger.info("Installation timed out")
-            self._process.kill()
-            self._cleanup_script_files(self._ps_script, self._tmp_batch_file)
-            raise exception.Error("Resource instalation timed out")
 
         if self._process.is_alive():
             return False
 
-        self._cleanup_script_files(self._ps_script, self._tmp_batch_file)
+        if self._process.exitcode == 0:
+            return True
 
-        if self._process.exit_code() != 0:
-            logger.info("Installation exitcode %s" % self._process.exit_code())
-            raise exception.Error("Install error:%s" % self._process.std_out())
+        exp = self._queue.get() if self._queue.empty() is False else None
+        if exp is not None:
+            raise exp
 
-        logger.info("Server resource %s configuration done" % self.resource_id)
-        return True
-
-    def _cleanup_script_files(self, ps_script, tmp_batch_file):
-        # remove the temp powershell and batch script
+    def _configure_server(self, admin_pass, user_data, public_ip, queue):
         try:
-            os.remove(ps_script)
-        except:
-            pass
-        try:
-            os.remove(tmp_batch_file)
-        except:
-            pass
+            # create powershell script with user_data
+            powershell_script = tempfile.NamedTemporaryFile(suffix=".ps1",
+                                                            delete=False)
 
-    def _userdata_ps_script(self, user_data):
-        # create powershell script with user_data
-        powershell_script = tempfile.NamedTemporaryFile(suffix=".ps1",
-                                                        delete=False)
+            powershell_script.write(user_data)
+            ps_script_full_path = powershell_script.name
+            powershell_script.close()
 
-        powershell_script.write(user_data)
-        ps_script_full_path = powershell_script.name
-        powershell_script.close()
-        return ps_script_full_path
+            # wait for the server to come up
+            server_up = False
+            retry_count = 0
+            MAX_RETRY_COUNT = 30
+            while retry_count < MAX_RETRY_COUNT:
+                if wait_net_service(public_ip, 445, timeout=10):
+                    server_up = True
+                    break
+                time.sleep(20)
+                retry_count += 1
 
-    def _wrapper_batch_script(self, command):
-        batch_file_command = "powershell.exe -executionpolicy unrestricted " \
-            "-command .\%s" % command
-        batch_file = tempfile.NamedTemporaryFile(suffix=".bat", delete=False)
-        batch_file.write(batch_file_command)
-        batch_file.close()
-        return batch_file.name
+            # Now connect to server using impacket and do the following
+            # 1. copy powershell script to remote server
+            # 2. execute the script
+            # 3. close the connection (exit)
+            status = 0
+            output = None
+            if server_up:
+                (status, output) = psexec_run_script(
+                    'Administrator',
+                    admin_pass,
+                    public_ip,
+                    ps_script_full_path,
+                    os.path.basename(ps_script_full_path))
+
+            # remove the temp powershell script
+            try:
+                os.remove(ps_script_full_path)
+            except:
+                pass
+
+            if retry_count > MAX_RETRY_COUNT:
+                queue.put(exception.Error("Resource creation timeout out"))
+                exit(1)
+
+            if status != 0:
+                queue.put(exception.Error("Installation error: %s" % output))
+                exit(1)
+
+        except Exception as exp:
+            queue.put(exp)
+            exit(1)
+
+        exit(0)
 
     def handle_delete(self):
         '''
@@ -394,6 +388,7 @@ class WinServer(rackspace_resource.RackspaceResource):
         # check validity of given image
         if self.properties['image'] not in self.images:
             return {'Error': 'Image not found.'}
+        # TODO(Vijendar):
         ## check validity of gvien flavor
         #if self.properties['flavor'] not in self.flavors:
             #return {'Error': "flavor not found."}
