@@ -259,7 +259,8 @@ class EngineService(service.Service):
         tmpl = parser.Template(template, files=files)
 
         if len(tmpl[tpl.RESOURCES]) > cfg.CONF.max_resources_per_stack:
-            raise exception.StackResourceLimitExceeded()
+            raise exception.RequestLimitExceeded(
+                message=exception.StackResourceLimitExceeded.message)
 
         # Extract the common query parameters
         common_params = api.extract_args(args)
@@ -270,11 +271,6 @@ class EngineService(service.Service):
         self._validate_deferred_auth_context(cnxt, stack)
 
         stack.validate()
-
-        # Creates a trust and sets the trust_id and trustor_user_id in
-        # the current context, before we store it in stack.store()
-        # Does nothing if deferred_auth_method is 'password'
-        stack.clients.keystone().create_trust_context()
 
         stack_id = stack.store()
 
@@ -307,7 +303,8 @@ class EngineService(service.Service):
         # stack definition.
         tmpl = parser.Template(template, files=files)
         if len(tmpl[tpl.RESOURCES]) > cfg.CONF.max_resources_per_stack:
-            raise exception.StackResourceLimitExceeded()
+            raise exception.RequestLimitExceeded(
+                message=exception.StackResourceLimitExceeded.message)
         stack_name = current_stack.name
         common_params = api.extract_args(args)
         env = environment.Environment(params)
@@ -408,13 +405,6 @@ class EngineService(service.Service):
         logger.info('deleting stack %s' % st.name)
 
         stack = parser.Stack.load(cnxt, stack=st)
-
-        # If we created a trust, delete it
-        # Note this is using the current request context, not the stored
-        # context, as it seems it's not possible to delete a trust with
-        # a token obtained via that trust.  This means that only the user
-        # who created the stack can delete it when using trusts atm.
-        stack.clients.keystone().delete_trust_context()
 
         # Kill any pending threads by calling ThreadGroup.stop()
         if st.id in self.stg:

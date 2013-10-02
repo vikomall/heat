@@ -23,13 +23,13 @@ from testtools import matchers
 from oslo.config import cfg
 
 from heat.engine import environment
-from heat.common import heat_keystoneclient as hkc
 from heat.common import exception
 from heat.tests.v1_1 import fakes
 import heat.rpc.api as engine_api
 import heat.db.api as db_api
 from heat.common import identifier
 from heat.common import template_format
+from heat.engine import dependencies
 from heat.engine import parser
 from heat.engine.resource import _register_class
 from heat.engine import service
@@ -43,7 +43,6 @@ from heat.openstack.common import threadgroup
 from heat.tests.common import HeatTestCase
 from heat.tests import generic_resource as generic_rsrc
 from heat.tests import utils
-
 
 wp_template = '''
 {
@@ -300,16 +299,6 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
         self.m.StubOutWithMock(stack, 'validate')
         stack.validate().AndReturn(None)
 
-        self.m.StubOutClassWithMocks(hkc.kc, "Client")
-        mock_ks_client = hkc.kc.Client(
-            auth_url=mox.IgnoreArg(),
-            tenant_name='test_tenant',
-            token='abcd1234')
-        mock_ks_client.authenticate().AndReturn(True)
-
-        self.m.StubOutWithMock(hkc.KeystoneClient, 'create_trust_context')
-        hkc.KeystoneClient.create_trust_context().AndReturn(None)
-
         self.m.StubOutWithMock(threadgroup, 'ThreadGroup')
         threadgroup.ThreadGroup().AndReturn(DummyThreadGroup())
 
@@ -455,16 +444,6 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
                      stack.t,
                      stack.env).AndReturn(stack)
 
-        self.m.StubOutClassWithMocks(hkc.kc, "Client")
-        mock_ks_client = hkc.kc.Client(
-            auth_url=mox.IgnoreArg(),
-            tenant_name='test_tenant',
-            token='abcd1234')
-        mock_ks_client.authenticate().AndReturn(True)
-
-        self.m.StubOutWithMock(hkc.KeystoneClient, 'create_trust_context')
-        hkc.KeystoneClient.create_trust_context().AndReturn(None)
-
         self.m.ReplayAll()
 
         cfg.CONF.set_override('max_resources_per_stack', 3)
@@ -486,9 +465,11 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
                'C': {'Type': 'GenericResourceType'}}}
         template = parser.Template(tpl)
         cfg.CONF.set_override('max_resources_per_stack', 2)
-        self.assertRaises(exception.StackResourceLimitExceeded,
-                          self.man.create_stack, self.ctx, stack_name,
-                          template, params, None, {})
+        ex = self.assertRaises(exception.RequestLimitExceeded,
+                               self.man.create_stack, self.ctx, stack_name,
+                               template, params, None, {})
+        self.assertIn(exception.StackResourceLimitExceeded.message,
+                      str(ex))
 
     def test_stack_validate(self):
         stack_name = 'service_create_test_validate'
@@ -527,16 +508,6 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
         self.m.StubOutWithMock(parser.Stack, 'load')
 
         parser.Stack.load(self.ctx, stack=s).AndReturn(stack)
-
-        self.m.StubOutClassWithMocks(hkc.kc, "Client")
-        mock_ks_client = hkc.kc.Client(
-            auth_url=mox.IgnoreArg(),
-            tenant_name='test_tenant',
-            token='abcd1234')
-        mock_ks_client.authenticate().AndReturn(True)
-
-        self.m.StubOutWithMock(hkc.KeystoneClient, 'delete_trust_context')
-        hkc.KeystoneClient.delete_trust_context().AndReturn(None)
 
         self.man.tg = DummyThreadGroup()
 
@@ -661,9 +632,12 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
 
         cfg.CONF.set_override('max_resources_per_stack', 2)
 
-        self.assertRaises(exception.StackResourceLimitExceeded,
-                          self.man.update_stack, self.ctx,
-                          old_stack.identifier(), template, params, None, {})
+        ex = self.assertRaises(exception.RequestLimitExceeded,
+                               self.man.update_stack, self.ctx,
+                               old_stack.identifier(), template, params, None,
+                               {})
+        self.assertIn(exception.StackResourceLimitExceeded.message,
+                      str(ex))
 
     def test_stack_update_verify_err(self):
         stack_name = 'service_update_verify_err_test_stack'
@@ -1768,3 +1742,38 @@ class StackServiceTest(HeatTestCase):
         sl = self.eng.show_stack(self.ctx, None)
 
         self.assertEqual(0, len(sl))
+
+    def test_lazy_load_resources(self):
+        stack_name = 'lazy_load_test'
+        res._register_class('GenericResourceType',
+                            generic_rsrc.GenericResource)
+
+        lazy_load_template = {
+            'Resources': {
+                'foo': {'Type': 'GenericResourceType'},
+                'bar': {
+                    'Type': 'ResourceWithPropsType',
+                    'Properties': {
+                        'Foo': {'Ref': 'foo'},
+                    }
+                }
+            }
+        }
+        templ = parser.Template(lazy_load_template)
+        stack = parser.Stack(self.ctx, stack_name, templ,
+                             environment.Environment({}))
+
+        self.assertEqual(stack._resources, None)
+        self.assertEqual(stack._dependencies, None)
+
+        resources = stack.resources
+        self.assertEqual(type(resources), dict)
+        self.assertEqual(len(resources), 2)
+        self.assertEqual(type(resources.get('foo')),
+                         generic_rsrc.GenericResource)
+        self.assertEqual(type(resources.get('bar')),
+                         generic_rsrc.ResourceWithProps)
+
+        stack_dependencies = stack.dependencies
+        self.assertEqual(type(stack_dependencies), dependencies.Dependencies)
+        self.assertEqual(len(stack_dependencies.graph()), 2)

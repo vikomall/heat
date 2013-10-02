@@ -16,6 +16,8 @@
 import functools
 import re
 
+from oslo.config import cfg
+
 from heat.engine import environment
 from heat.common import exception
 from heat.engine import dependencies
@@ -88,6 +90,8 @@ class Stack(object):
         self.timeout_mins = timeout_mins
         self.disable_rollback = disable_rollback
         self.parent_resource = parent_resource
+        self._resources = None
+        self._dependencies = None
 
         resources.initialise()
 
@@ -102,12 +106,24 @@ class Stack(object):
         else:
             self.outputs = {}
 
-        template_resources = self.t[template.RESOURCES]
-        self.resources = dict((name,
-                               resource.Resource(name, data, self))
-                              for (name, data) in template_resources.items())
+    @property
+    def resources(self):
+        if self._resources is None:
+            template_resources = self.t[template.RESOURCES]
+            self._resources = dict((name, resource.Resource(name, data, self))
+                                   for (name, data) in
+                                   template_resources.items())
+        return self._resources
 
-        self.dependencies = self._get_dependencies(self.resources.itervalues())
+    @property
+    def dependencies(self):
+        if self._dependencies is None:
+            self._dependencies = self._get_dependencies(
+                self.resources.itervalues())
+        return self._dependencies
+
+    def reset_dependencies(self):
+        self._dependencies = None
 
     @property
     def root_stack(self):
@@ -194,7 +210,13 @@ class Stack(object):
         if self.id:
             db_api.stack_update(self.context, self.id, s)
         else:
-            new_creds = db_api.user_creds_create(self.context)
+            # Create a context containing a trust_id and trustor_user_id
+            # if trusts are enabled
+            if cfg.CONF.deferred_auth_method == 'trusts':
+                trust_context = self.clients.keystone().create_trust_context()
+                new_creds = db_api.user_creds_create(trust_context)
+            else:
+                new_creds = db_api.user_creds_create(self.context)
             s['user_creds_id'] = new_creds.id
             new_s = db_api.stack_create(self.context, s)
             self.id = new_s.id
@@ -460,8 +482,7 @@ class Stack(object):
                 while not updater.step():
                     yield
             finally:
-                cur_deps = self._get_dependencies(self.resources.itervalues())
-                self.dependencies = cur_deps
+                self.reset_dependencies()
 
             if action == self.UPDATE:
                 reason = 'Stack successfully updated'
@@ -539,6 +560,13 @@ class Stack(object):
 
         self.state_set(action, stack_status, reason)
         if stack_status != self.FAILED:
+            # If we created a trust, delete it
+            stack = db_api.stack_get(self.context, self.id)
+            user_creds = db_api.user_creds_get(stack.user_creds_id)
+            trust_id = user_creds.get('trust_id')
+            if trust_id:
+                self.clients.keystone().delete_trust(trust_id)
+            # delete the stack
             db_api.stack_delete(self.context, self.id)
             self.id = None
 

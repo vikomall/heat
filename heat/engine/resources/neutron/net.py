@@ -25,20 +25,47 @@ logger = logging.getLogger(__name__)
 
 
 class Net(neutron.NeutronResource):
-    properties_schema = {'name': {'Type': 'String'},
-                         'value_specs': {'Type': 'Map',
-                                         'Default': {}},
-                         'admin_state_up': {'Default': True,
-                                            'Type': 'Boolean'},
-                         'tenant_id': {'Type': 'String'},
-                         'shared': {'Type': 'Boolean'}}
-
+    properties_schema = {
+        'name': {
+            'Type': 'String',
+            'Description': _('A string specifying a symbolic name for '
+                             'the network, which is not required to be '
+                             'unique.')
+        },
+        'value_specs': {
+            'Type': 'Map',
+            'Default': {},
+            'Description': _('Extra parameters to include in the "network" '
+                             'object in the creation request. Parameters '
+                             'are often specific to installed hardware or '
+                             'extensions.')
+        },
+        'admin_state_up': {
+            'Default': True,
+            'Type': 'Boolean',
+            'Description': _('A boolean value specifying the administrative '
+                             'status of the network.')
+        },
+        'tenant_id': {
+            'Type': 'String',
+            'Description': _('The ID of the tenant which will own the '
+                             'network. Only administrative users can set '
+                             'the tenant identifier; this cannot be changed '
+                             'using authorization policies.')
+        },
+        'shared': {
+            'Type': 'Boolean',
+            'Description': _('Whether this network should be shared across '
+                             'all tenants. Note that the default policy '
+                             'setting restricts usage of this attribute to '
+                             'administrative users only.')
+        }}
     attributes_schema = {
-        "status": "The status of the network.",
-        "name": "The name of the network.",
-        "subnets": "Subnets of this network.",
-        "admin_state_up": "The administrative status of the network.",
-        "tenant_id": "The tenant owning this network."
+        "status": _("The status of the network."),
+        "name": _("The name of the network."),
+        "subnets": _("Subnets of this network."),
+        "admin_state_up": _("The administrative status of the network."),
+        "tenant_id": _("The tenant owning this network."),
     }
 
     def handle_create(self):
