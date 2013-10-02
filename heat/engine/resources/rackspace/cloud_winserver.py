@@ -16,8 +16,10 @@
 import os
 import shlex
 import signal
+import socket
 import subprocess
 import tempfile
+import time
 
 from multiprocessing import Process
 from multiprocessing import Queue
@@ -83,6 +85,46 @@ def get_wrapper_batch_file(command):
     batch_file.write(batch_file_command)
     batch_file.close()
     return batch_file.name
+
+
+def wait_net_service(server, port, timeout=None):
+    """Wait for network service to appear
+        @param timeout: in seconds, if None or 0 wait forever
+        @return: True of False, if timeout is None may return only True or
+                 throw unhandled network exception
+    """
+
+    s = socket.socket()
+    if timeout:
+        from time import time as now
+        # time module is needed to calc timeout shared between two exceptions
+        end = now() + timeout
+
+    while True:
+        try:
+            if timeout:
+                next_timeout = end - now()
+                if next_timeout < 0:
+                    return False
+                else:
+                    s.settimeout(next_timeout)
+
+            s.connect((server, port))
+
+        except:
+            # Handle refused connections, etc.
+            if timeout:
+                next_timeout = end - now()
+                if next_timeout < 0:
+                    return False
+                else:
+                    s.settimeout(next_timeout)
+
+            time.sleep(1)
+
+        else:
+            s.close()
+            return True
 
 
 def psexec_run_script(username, password, address, filename,
@@ -274,24 +316,30 @@ class WinServer(rackspace_resource.RackspaceResource):
             ps_script_full_path = powershell_script.name
             powershell_script.close()
 
+            # wait for the server to come up
+            server_up = False
+            retry_count = 0
+            MAX_RETRY_COUNT = 30
+            while retry_count < MAX_RETRY_COUNT:
+                if wait_net_service(public_ip, 445, timeout=10):
+                    server_up = True
+                    break
+                time.sleep(20)
+                retry_count += 1
+
             # Now connect to server using impacket and do the following
             # 1. copy powershell script to remote server
             # 2. execute the script
             # 3. close the connection (exit)
-            MAX_RETRY_COUNT = 20
-            retry_count = 0
-            while retry_count < MAX_RETRY_COUNT:
+            status = 0
+            output = None
+            if server_up:
                 (status, output) = psexec_run_script(
                     'Administrator',
                     admin_pass,
                     public_ip,
                     ps_script_full_path,
                     os.path.basename(ps_script_full_path))
-
-                if status != 0:
-                    continue
-
-                retry_count += 1
 
             # remove the temp powershell script
             try:
@@ -302,6 +350,11 @@ class WinServer(rackspace_resource.RackspaceResource):
             if retry_count > MAX_RETRY_COUNT:
                 queue.put(exception.Error("Resource creation timeout out"))
                 exit(1)
+
+            if status != 0:
+                queue.put(exception.Error("Installation error: %s" % output))
+                exit(1)
+
         except Exception as exp:
             queue.put(exp)
             exit(1)
