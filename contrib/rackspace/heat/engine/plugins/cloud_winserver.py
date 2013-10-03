@@ -140,7 +140,7 @@ def psexec_run_script(username, password, address, filename,
     lines = "put %s\nput %s\n%s\nexit\n" % (
         filename, wrapper_batch_file, os.path.basename(wrapper_batch_file))
 
-    return run_command(cmd, lines=lines, timeout=1800)
+    return run_command(cmd, lines=lines, timeout=1800), wrapper_batch_file
 
 
 class WinServer(rackspace_resource.RackspaceResource):
@@ -333,8 +333,9 @@ class WinServer(rackspace_resource.RackspaceResource):
             # 3. close the connection (exit)
             status = 0
             output = None
+            tmp_batch_file = None
             if server_up:
-                (status, output) = psexec_run_script(
+                (status, output, tmp_batch_file) = psexec_run_script(
                     'Administrator',
                     admin_pass,
                     public_ip,
@@ -344,6 +345,13 @@ class WinServer(rackspace_resource.RackspaceResource):
             # remove the temp powershell script
             try:
                 os.remove(ps_script_full_path)
+            except:
+                pass
+
+            # remove the tmp batch file
+            try:
+                if tmp_batch_file:
+                    os.remove(tmp_batch_file)
             except:
                 pass
 
