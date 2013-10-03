@@ -128,19 +128,17 @@ def wait_net_service(server, port, timeout=None):
 
 
 def psexec_run_script(username, password, address, filename,
-                      command, path="C:\\Windows"):
+                      wrapper_batch_file, path="C:\\Windows"):
     psexec = "%s/psexec.py" % os.path.dirname(__file__)
     psscript = "%s/download_wpi.ps1" % os.path.dirname(__file__)
     cmd_string = "nice python %s -path '%s' '%s':'%s'@'%s' " \
         "'c:\\windows\\sysnative\\cmd'"
     cmd = cmd_string % (psexec, path, username, password, address)
 
-    # create a batch file that launches given powershell script
-    wrapper_batch_file = get_wrapper_batch_file(command)
     lines = "put %s\nput %s\n%s\nexit\n" % (
         filename, wrapper_batch_file, os.path.basename(wrapper_batch_file))
 
-    return run_command(cmd, lines=lines, timeout=1800), wrapper_batch_file
+    return run_command(cmd, lines=lines, timeout=1800)
 
 
 class WinServer(rackspace_resource.RackspaceResource):
@@ -333,14 +331,17 @@ class WinServer(rackspace_resource.RackspaceResource):
             # 3. close the connection (exit)
             status = 0
             output = None
-            tmp_batch_file = None
+            # create a batch file that launches given powershell script
+            tmp_batch_file = get_wrapper_batch_file(
+                os.path.basename(ps_script_full_path))
+
             if server_up:
-                (status, output, tmp_batch_file) = psexec_run_script(
+                (status, output) = psexec_run_script(
                     'Administrator',
                     admin_pass,
                     public_ip,
                     ps_script_full_path,
-                    os.path.basename(ps_script_full_path))
+                    tmp_batch_file)
 
             # remove the temp powershell script
             try:
