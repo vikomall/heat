@@ -183,7 +183,10 @@ class WinServer(rackspace_resource.RackspaceResource):
         self._server = None
         self._process = None
         self._queue = None
-        signal.signal(signal.SIGTERM, self._exithandler)
+        self._last_time_stamp = None
+        self._retry_count = 0
+        self._max_retry_limit = 10
+        #signal.signal(signal.SIGTERM, self._exithandler)
 
     def _exithandler(self, singnum, frame):
         try:
@@ -267,14 +270,44 @@ class WinServer(rackspace_resource.RackspaceResource):
 
         return instance
 
+    def _is_time_to_get_status(self):
+        if self._last_time_stamp is None:
+            self._last_time_stamp = time.time()
+            return True
+
+        # For now get status for every 30secs
+        if time.time() - self._last_time_stamp > 30:
+            self._last_time_stamp = time.time()
+            return True
+
+        return False
+
     def check_create_complete(self, instance):
         '''
         Check if cloud Windows server instance creation is complete.
         '''
-        instance.get()  # get ted attributes
+        if not self._is_time_to_get_status():
+            return False
+
+        try:
+            instance.get()  # get updated attributes
+        except Exception as ex:
+            if self._retry_count < self._max_retry_limit:
+                logger.info("Exception found in get status...going to retry.")
+                logger.info("Exception:%s res_id:%s" % (ex, self.resource_id))
+                self._retry_count += 1
+                return False
+            raise ex
+
         if instance.status == 'ERROR':
+            if self._retry_count < self._max_retry_limit:
+                logger.info("Cloud server returned ERROR...going to retry.")
+                self._retry_count += 1
+                return False
+
+            msg = "Retried %s times." % self._retry_count
             instance.delete()
-            raise exception.Error("WinServer instance creation failed.")
+            raise exception.Error("Cloud server creation failed.%s" % msg)
 
         if instance.status != 'ACTIVE':
             return False
