@@ -118,7 +118,10 @@ class ElasticIp(resource.Resource):
                     if e.status_code != 404:
                         raise e
             else:
-                self.nova().floating_ips.delete(self.resource_id)
+                try:
+                    self.nova().floating_ips.delete(self.resource_id)
+                except clients.novaclient.exceptions.NotFound:
+                    pass
 
     def FnGetRefId(self):
         return unicode(self._ipaddress())
@@ -190,12 +193,13 @@ class ElasticIpAssociation(resource.Resource):
             subnet_rsrc = subnets['subnets'][0]
             netid = subnet_rsrc['network_id']
 
-            router_id = VPC.router_for_vpc(self.neutron(), netid)['id']
-            floatingip = self.neutron().show_floatingip(float_id)
-            floating_net_id = floatingip['floatingip']['floating_network_id']
-
-            self.neutron().add_gateway_router(
-                router_id, {'network_id': floating_net_id})
+            router = VPC.router_for_vpc(self.neutron(), netid)
+            if router is not None:
+                floatingip = self.neutron().show_floatingip(float_id)
+                floating_net_id = \
+                    floatingip['floatingip']['floating_network_id']
+                self.neutron().add_gateway_router(
+                    router['id'], {'network_id': floating_net_id})
 
             self.neutron().update_floatingip(
                 float_id, {'floatingip': {'port_id': port_id}})

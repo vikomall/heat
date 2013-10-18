@@ -96,7 +96,7 @@ class SignalTest(HeatTestCase):
         self.m.ReplayAll()
         self.stack.create()
 
-        rsrc = self.stack.resources['signal_handler']
+        rsrc = self.stack['signal_handler']
         created_time = datetime.datetime(2012, 11, 29, 13, 49, 37)
         rsrc.created_time = created_time
         self.assertEqual(rsrc.state, (rsrc.CREATE, rsrc.COMPLETE))
@@ -123,7 +123,7 @@ class SignalTest(HeatTestCase):
         self.m.ReplayAll()
         self.stack.create()
 
-        rsrc = self.stack.resources['signal_handler']
+        rsrc = self.stack['signal_handler']
         self.assertEqual(rsrc.state, (rsrc.CREATE, rsrc.COMPLETE))
 
         first_url = rsrc.FnGetAtt('AlarmUrl')
@@ -138,7 +138,7 @@ class SignalTest(HeatTestCase):
         self.m.ReplayAll()
         self.stack.create()
 
-        rsrc = self.stack.resources['signal_handler']
+        rsrc = self.stack['signal_handler']
         self.assertEqual(rsrc.state, (rsrc.CREATE, rsrc.COMPLETE))
 
         rsrc.delete()
@@ -162,13 +162,57 @@ class SignalTest(HeatTestCase):
         self.m.ReplayAll()
         self.stack.create()
 
-        rsrc = self.stack.resources['signal_handler']
+        rsrc = self.stack['signal_handler']
         self.assertEqual(rsrc.state, (rsrc.CREATE, rsrc.COMPLETE))
         self.assertTrue(rsrc.requires_deferred_auth)
 
         rsrc.signal(details=test_d)
 
         self.m.VerifyAll()
+
+    @utils.stack_delete_after
+    def test_signal_different_reason_types(self):
+        self.stack = self.create_stack()
+        self.stack.create()
+
+        rsrc = self.stack['signal_handler']
+        self.assertEqual(rsrc.state, (rsrc.CREATE, rsrc.COMPLETE))
+        self.assertTrue(rsrc.requires_deferred_auth)
+
+        ceilo_details = {'current': 'foo', 'reason': 'apples',
+                         'previous': 'SUCCESS'}
+        ceilo_expected = 'alarm state changed from SUCCESS to foo (apples)'
+
+        watch_details = {'state': 'go_for_it'}
+        watch_expected = 'alarm state changed to go_for_it'
+
+        str_details = 'a string details'
+        str_expected = str_details
+
+        none_details = None
+        none_expected = 'No signal details provided'
+
+        # to confirm we get a string reason
+        self.m.StubOutWithMock(generic_resource.SignalResource,
+                               '_add_event')
+        generic_resource.SignalResource._add_event(
+            'signal', 'COMPLETE', ceilo_expected).AndReturn(None)
+        generic_resource.SignalResource._add_event(
+            'signal', 'COMPLETE', watch_expected).AndReturn(None)
+        generic_resource.SignalResource._add_event(
+            'signal', 'COMPLETE', str_expected).AndReturn(None)
+        generic_resource.SignalResource._add_event(
+            'signal', 'COMPLETE', none_expected).AndReturn(None)
+
+        self.m.ReplayAll()
+
+        for test_d in (ceilo_details, watch_details,
+                       str_details, none_details):
+            rsrc.signal(details=test_d)
+
+        self.m.VerifyAll()
+        # so we don't have to stub out deletion events.
+        self.m.UnsetStubs()
 
     @utils.stack_delete_after
     def test_signal_wrong_resource(self):
@@ -179,7 +223,7 @@ class SignalTest(HeatTestCase):
         self.m.ReplayAll()
         self.stack.create()
 
-        rsrc = self.stack.resources['resource_X']
+        rsrc = self.stack['resource_X']
         self.assertEqual(rsrc.state, (rsrc.CREATE, rsrc.COMPLETE))
 
         err_metadata = {'Data': 'foo', 'Status': 'SUCCESS', 'UniqueId': '123'}
@@ -197,7 +241,7 @@ class SignalTest(HeatTestCase):
         self.m.ReplayAll()
         self.stack.create()
 
-        rsrc = self.stack.resources['signal_handler']
+        rsrc = self.stack['signal_handler']
         self.assertEqual(rsrc.state, (rsrc.CREATE, rsrc.COMPLETE))
         # manually override the action to DELETE
         rsrc.action = rsrc.DELETE
@@ -226,7 +270,7 @@ class SignalTest(HeatTestCase):
         self.m.ReplayAll()
         self.stack.create()
 
-        rsrc = self.stack.resources['signal_handler']
+        rsrc = self.stack['signal_handler']
         self.assertEqual(rsrc.state, (rsrc.CREATE, rsrc.COMPLETE))
 
         self.assertRaises(exception.ResourceFailure,

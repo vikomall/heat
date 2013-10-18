@@ -28,30 +28,19 @@ supported backend.
 
 from oslo.config import cfg
 
-from heat.db import utils
+from heat.openstack.common.db import api as db_api
 
-SQL_CONNECTION = 'sqlite://'
-SQL_IDLE_TIMEOUT = 3600
 db_opts = [
     cfg.StrOpt('db_backend',
                default='sqlalchemy',
                help='The backend to use for db')]
 
-cfg.CONF.register_opts(db_opts)
+CONF = cfg.CONF
+CONF.register_opts(db_opts)
 
-IMPL = utils.LazyPluggable('db_backend',
-                           sqlalchemy='heat.db.sqlalchemy.api')
+_BACKEND_MAPPING = {'sqlalchemy': 'heat.db.sqlalchemy.api'}
 
-
-cfg.CONF.import_opt('sql_connection', 'heat.common.config')
-cfg.CONF.import_opt('sql_idle_timeout', 'heat.common.config')
-
-
-def configure():
-    global SQL_CONNECTION
-    global SQL_IDLE_TIMEOUT
-    SQL_CONNECTION = cfg.CONF.sql_connection
-    SQL_IDLE_TIMEOUT = cfg.CONF.sql_idle_timeout
+IMPL = db_api.DBAPI(backend_mapping=_BACKEND_MAPPING)
 
 
 def get_session():
@@ -123,6 +112,10 @@ def stack_get_by_name(context, stack_name, owner_id=None):
 
 def stack_get_all(context):
     return IMPL.stack_get_all(context)
+
+
+def stack_get_all_by_owner_id(context, owner_id):
+    return IMPL.stack_get_all_by_owner_id(context, owner_id)
 
 
 def stack_get_all_by_tenant(context):
@@ -211,7 +204,3 @@ def watch_data_create(context, values):
 
 def watch_data_get_all(context):
     return IMPL.watch_data_get_all(context)
-
-
-def watch_data_delete(context, watch_name):
-    return IMPL.watch_data_delete(context, watch_name)

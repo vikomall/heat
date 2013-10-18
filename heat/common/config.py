@@ -68,15 +68,6 @@ service_opts = [
                default=3,
                help='Maximum depth allowed when using nested stacks.')]
 
-db_opts = [
-    cfg.StrOpt('sql_connection',
-               default='mysql://heat:heat@localhost/heat',
-               help='The SQLAlchemy connection string used to connect to the '
-               'database'),
-    cfg.IntOpt('sql_idle_timeout',
-               default=3600,
-               help='timeout before idle sql connections are reaped')]
-
 engine_opts = [
     cfg.StrOpt('instance_user',
                default='ec2-user',
@@ -134,7 +125,6 @@ auth_password_opts = [
                        'multi_cloud is enabled. At least one endpoint needs '
                        'to be specified.'))]
 
-cfg.CONF.register_opts(db_opts)
 cfg.CONF.register_opts(engine_opts)
 cfg.CONF.register_opts(service_opts)
 cfg.CONF.register_opts(rpc_opts)
@@ -191,7 +181,7 @@ def load_paste_app(app_name=None):
 
     conf_file = _get_deployment_config_file()
     if conf_file is None:
-        raise RuntimeError("Unable to locate config file")
+        raise RuntimeError(_("Unable to locate config file"))
 
     try:
         app = wsgi.paste_deploy_app(conf_file, app_name, cfg.CONF)
@@ -203,8 +193,8 @@ def load_paste_app(app_name=None):
 
         return app
     except (LookupError, ImportError) as e:
-        raise RuntimeError("Unable to load %(app_name)s from "
-                           "configuration file %(conf_file)s."
-                           "\nGot: %(e)r" % {'app_name': app_name,
-                                             'conf_file': conf_file,
-                                             'e': e})
+        raise RuntimeError(_("Unable to load %(app_name)s from "
+                             "configuration file %(conf_file)s."
+                             "\nGot: %(e)r") % {'app_name': app_name,
+                                                'conf_file': conf_file,
+                                                'e': e})

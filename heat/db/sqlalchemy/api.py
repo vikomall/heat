@@ -14,6 +14,7 @@
 #    under the License.
 
 '''Implementation of SQLAlchemy backend.'''
+import sys
 from datetime import datetime
 from datetime import timedelta
 
@@ -28,8 +29,17 @@ from heat.openstack.common.gettextutils import _
 from heat.common import crypt
 from heat.common import exception
 from heat.db.sqlalchemy import models
-from heat.db.sqlalchemy.session import get_engine
-from heat.db.sqlalchemy.session import get_session
+from heat.openstack.common.db.sqlalchemy import session as db_session
+
+
+get_engine = db_session.get_engine
+get_session = db_session.get_session
+
+
+def get_backend():
+    """The backend is this module itself."""
+
+    return sys.modules[__name__]
 
 
 def model_query(context, *args):
@@ -114,13 +124,20 @@ def resource_get_all(context):
 
 
 def resource_data_get(resource, key):
-    """Lookup value of resource's data by key."""
-    result = resource_data_get_by_key(resource.context, resource.id, key)
+    """Lookup value of resource's data by key. Decrypts resource data if
+    necessary.
+    """
+    result = resource_data_get_by_key(resource.context,
+                                      resource.id,
+                                      key)
+    if result.redact:
+        return _decrypt(result.value)
     return result.value
 
 
 def _encrypt(value):
-    return crypt.encrypt(value.encode('utf-8'))
+    if value is not None:
+        return crypt.encrypt(value.encode('utf-8'))
 
 
 def _decrypt(enc_value):
@@ -130,14 +147,15 @@ def _decrypt(enc_value):
 
 
 def resource_data_get_by_key(context, resource_id, key):
+    """Looks up resource_data by resource_id and key. Does not unencrypt
+    resource_data.
+    """
     result = (model_query(context, models.ResourceData)
               .filter_by(resource_id=resource_id)
-              .filter_by(key=key)
-              .first())
+              .filter_by(key=key).first())
+
     if not result:
         raise exception.NotFound('No resource data found')
-    if result.redact and result.value:
-        result.value = _decrypt(result.value)
     return result
 
 
@@ -153,7 +171,7 @@ def resource_data_set(resource, key, value, redact=False):
         current.resource_id = resource.id
     current.redact = redact
     current.value = value
-    current.save()
+    current.save(session=resource.context.session)
     return current
 
 
@@ -223,6 +241,12 @@ def stack_get(context, stack_id, admin=False, show_deleted=False):
 def stack_get_all(context):
     results = soft_delete_aware_query(context, models.Stack).\
         filter_by(owner_id=None).all()
+    return results
+
+
+def stack_get_all_by_owner_id(context, owner_id):
+    results = soft_delete_aware_query(context, models.Stack).\
+        filter_by(owner_id=owner_id).all()
     return results
 
 
@@ -444,20 +468,6 @@ def watch_data_create(context, values):
 def watch_data_get_all(context):
     results = model_query(context, models.WatchData).all()
     return results
-
-
-def watch_data_delete(context, watch_name):
-    ds = model_query(context, models.WatchRule).\
-        filter_by(name=watch_name).all()
-
-    if not ds:
-        raise exception.NotFound('Attempt to delete watch_data: %s %s' %
-                                 (watch_name, 'that does not exist'))
-
-    session = Session.object_session(ds)
-    for d in ds:
-        session.delete(d)
-    session.flush()
 
 
 def purge_deleted(age):

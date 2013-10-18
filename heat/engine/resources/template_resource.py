@@ -41,6 +41,8 @@ class TemplateResource(stack_resource.StackResource):
     def __init__(self, name, json_snippet, stack):
         self._parsed_nested = None
         self.stack = stack
+        self.validation_exception = None
+
         tri = stack.env.get_resource_info(
             json_snippet['Type'],
             registry_type=environment.TemplateResourceInfo)
@@ -55,13 +57,20 @@ class TemplateResource(stack_resource.StackResource):
         # stack can be deleted, and detect it at validate/create time
         try:
             tmpl = template.Template(self.parsed_nested)
-        except ValueError:
+        except ValueError as parse_error:
+            self.validation_exception = parse_error
             tmpl = template.Template({})
 
         self.properties_schema = (properties.Properties
             .schema_from_params(tmpl.param_schemata()))
         self.attributes_schema = (attributes.Attributes
             .schema_from_outputs(tmpl[template.OUTPUTS]))
+
+        self.update_allowed_keys = ('Properties',)
+        # assume all properties are updatable, as they just get passed to
+        # the nested stack and that handles the updating/replacing.
+        self.update_allowed_properties = [pname
+                                          for pname in self.properties_schema]
 
         super(TemplateResource, self).__init__(name, json_snippet, stack)
 
@@ -70,31 +79,30 @@ class TemplateResource(stack_resource.StackResource):
         :return: parameter values for our nested stack based on our properties
         '''
         params = {}
-        for n, v in iter(self.properties.props.items()):
-            if not v.implemented():
+        for pname, pval in iter(self.properties.props.items()):
+            if not pval.implemented():
                 continue
 
-            val = self.properties[n]
-
+            val = self.properties[pname]
             if val is not None:
                 # take a list and create a CommaDelimitedList
-                if v.type() == properties.LIST:
+                if pval.type() == properties.LIST:
                     if len(val) == 0:
-                        val = ''
+                        params[pname] = ''
                     elif isinstance(val[0], dict):
                         flattened = []
-                        for (i, item) in enumerate(val):
-                            for (k, v) in iter(item.items()):
-                                mem_str = '.member.%d.%s=%s' % (i, k, v)
+                        for (count, item) in enumerate(val):
+                            for (ik, iv) in iter(item.items()):
+                                mem_str = '.member.%d.%s=%s' % (count, ik, iv)
                                 flattened.append(mem_str)
-                        params[n] = ','.join(flattened)
+                        params[pname] = ','.join(flattened)
                     else:
-                        val = ','.join(val)
-
-                # for MAP, the JSON param takes either a collection or string,
-                # so just pass it on and let the param validate as appropriate
-
-                params[n] = val
+                        params[pname] = ','.join(val)
+                else:
+                    # for MAP, the JSON param takes either a collection or
+                    # string, so just pass it on and let the param validate
+                    # as appropriate
+                    params[pname] = val
 
         return params
 
@@ -153,6 +161,10 @@ class TemplateResource(stack_resource.StackResource):
                 raise exception.StackValidationFailed(message=msg)
 
     def validate(self):
+        if self.validation_exception is not None:
+            msg = str(self.validation_exception)
+            raise exception.StackValidationFailed(message=msg)
+
         try:
             td = self.template_data
         except ValueError as ex:
@@ -172,6 +184,17 @@ class TemplateResource(stack_resource.StackResource):
 
     def handle_create(self):
         return self.create_with_template(self.parsed_nested,
+                                         self._to_parameters())
+
+    def handle_update(self, json_snippet, tmpl_diff, prop_diff):
+        # The stack template may be changed even if the prop_diff is empty.
+        self.properties = properties.Properties(
+            self.properties_schema,
+            json_snippet.get('Properties', {}),
+            self.stack.resolve_runtime_data,
+            self.name)
+
+        return self.update_with_template(self.parsed_nested,
                                          self._to_parameters())
 
     def handle_delete(self):

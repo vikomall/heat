@@ -22,7 +22,6 @@ import sys
 
 from oslo.config import cfg
 
-from heat.db import api as db_api
 from heat.db import migration
 from heat.db import utils
 from heat.openstack.common import log
@@ -63,7 +62,8 @@ def add_command_parsers(subparsers):
 
     parser = subparsers.add_parser('purge_deleted')
     parser.set_defaults(func=purge_deleted)
-    parser.add_argument('age', nargs='?')
+    parser.add_argument('age', nargs='?',
+                        help=_('Number of days to preserve.'))
 
 command_opt = cfg.SubCommandOpt('command',
                                 title='Commands',
@@ -79,7 +79,6 @@ def main():
              version=version.version_info.version_string(),
              default_config_files=default_config_files)
         log.setup("heat")
-        db_api.configure()
     except RuntimeError as e:
         sys.exit("ERROR: %s" % e)
 

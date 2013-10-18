@@ -462,6 +462,14 @@ Mappings:
             parser.Template.resolve_replace(snippet),
             '"foo" is "${var3}"')
 
+    def test_replace_list_value(self):
+        snippet = {"Fn::Replace": [
+            {'$var1': 'foo', '%var2%': ['bar']},
+            '$var1 is %var2%'
+        ]}
+        self.assertRaises(TypeError, parser.Template.resolve_replace,
+                          snippet)
+
     def test_member_list2map_good(self):
         snippet = {"Fn::MemberListToMap": [
             'Name', 'Value', ['.member.0.Name=metric',
@@ -665,20 +673,20 @@ class StackTest(HeatTestCase):
     def test_total_resources_nested(self):
         self._setup_nested('zyzzyx')
         self.assertEqual(4, self.stack.total_resources())
-        self.assertNotEqual(None, self.stack.resources['A'].nested())
+        self.assertNotEqual(None, self.stack['A'].nested())
         self.assertEqual(
-            2, self.stack.resources['A'].nested().total_resources())
+            2, self.stack['A'].nested().total_resources())
         self.assertEqual(
             4,
-            self.stack.resources['A'].nested().root_stack.total_resources())
+            self.stack['A'].nested().root_stack.total_resources())
 
     @utils.stack_delete_after
     def test_root_stack(self):
         self._setup_nested('toor')
         self.assertEqual(self.stack, self.stack.root_stack)
-        self.assertNotEqual(None, self.stack.resources['A'].nested())
+        self.assertNotEqual(None, self.stack['A'].nested())
         self.assertEqual(
-            self.stack, self.stack.resources['A'].nested().root_stack)
+            self.stack, self.stack['A'].nested().root_stack)
 
     @utils.stack_delete_after
     def test_load_parent_resource(self):
@@ -1786,6 +1794,27 @@ class StackTest(HeatTestCase):
         self.assertEqual(2, len(required_by))
         for r in ['CResource', 'DResource']:
             self.assertIn(r, required_by)
+
+    @utils.stack_delete_after
+    def test_resource_multi_required_by(self):
+        tmpl = {'Resources': {'AResource': {'Type': 'GenericResourceType'},
+                              'BResource': {'Type': 'GenericResourceType'},
+                              'CResource': {'Type': 'GenericResourceType'},
+                              'DResource': {'Type': 'GenericResourceType',
+                                            'DependsOn': ['AResource',
+                                                          'BResource',
+                                                          'CResource']}}}
+
+        self.stack = parser.Stack(self.ctx, 'depends_test_stack',
+                                  template.Template(tmpl))
+        self.stack.store()
+        self.stack.create()
+        self.assertEqual(self.stack.state,
+                         (parser.Stack.CREATE, parser.Stack.COMPLETE))
+
+        for r in ['AResource', 'BResource', 'CResource']:
+            self.assertEqual(['DResource'],
+                             self.stack[r].required_by())
 
     @utils.stack_delete_after
     def test_store_saves_owner(self):

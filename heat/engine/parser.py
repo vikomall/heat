@@ -13,6 +13,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import collections
 import functools
 import re
 
@@ -43,7 +44,7 @@ logger = logging.getLogger(__name__)
 (PARAM_STACK_NAME, PARAM_REGION) = ('AWS::StackName', 'AWS::Region')
 
 
-class Stack(object):
+class Stack(collections.Mapping):
 
     ACTIONS = (CREATE, DELETE, UPDATE, ROLLBACK, SUSPEND, RESUME
                ) = ('CREATE', 'DELETE', 'UPDATE', 'ROLLBACK', 'SUSPEND',
@@ -136,14 +137,18 @@ class Stack(object):
 
     def total_resources(self):
         '''
-        Total number of resources in a stack, including nested stacks below.
+        Return the total number of resources in a stack, including nested
+        stacks below.
         '''
-        total = 0
-        for res in iter(self.resources.values()):
-            if hasattr(res, 'nested') and res.nested():
-                total += res.nested().total_resources()
-            total += 1
-        return total
+        def total_nested(res):
+            get_nested = getattr(res, 'nested', None)
+            if callable(get_nested):
+                nested_stack = get_nested()
+                if nested_stack is not None:
+                    return nested_stack.total_resources()
+            return 0
+
+        return len(self) + sum(total_nested(res) for res in self.itervalues())
 
     def _set_param_stackid(self):
         '''
@@ -237,17 +242,9 @@ class Stack(object):
 
     def __iter__(self):
         '''
-        Return an iterator over this template's resources in the order that
-        they should be started.
+        Return an iterator over the resource names.
         '''
-        return iter(self.dependencies)
-
-    def __reversed__(self):
-        '''
-        Return an iterator over this template's resources in the order that
-        they should be stopped.
-        '''
-        return reversed(self.dependencies)
+        return iter(self.resources)
 
     def __len__(self):
         '''Return the number of resources.'''
@@ -257,17 +254,26 @@ class Stack(object):
         '''Get the resource with the specified name.'''
         return self.resources[key]
 
-    def __setitem__(self, key, value):
+    def __setitem__(self, key, resource):
         '''Set the resource with the specified name to a specific value.'''
-        self.resources[key] = value
+        resource.stack = self
+        self.resources[key] = resource
+
+    def __delitem__(self, key):
+        '''Remove the resource with the specified name.'''
+        del self.resources[key]
 
     def __contains__(self, key):
         '''Determine whether the stack contains the specified resource.'''
         return key in self.resources
 
-    def keys(self):
-        '''Return a list of resource keys for the stack.'''
-        return self.resources.keys()
+    def __eq__(self, other):
+        '''
+        Compare two Stacks for equality.
+
+        Stacks are considered equal only if they are identical.
+        '''
+        return self is other
 
     def __str__(self):
         '''Return a human-readable string representation of the stack.'''
@@ -278,7 +284,7 @@ class Stack(object):
         Return the resource in this stack with the specified
         refid, or None if not found
         '''
-        for r in self.resources.values():
+        for r in self.values():
             if r.state in (
                     (r.CREATE, r.IN_PROGRESS),
                     (r.CREATE, r.COMPLETE),
@@ -296,14 +302,14 @@ class Stack(object):
         # TODO(sdake) Should return line number of invalid reference
 
         # Check duplicate names between parameters and resources
-        dup_names = set(self.parameters.keys()) & set(self.resources.keys())
+        dup_names = set(self.parameters.keys()) & set(self.keys())
 
         if dup_names:
             logger.debug("Duplicate names %s" % dup_names)
             raise StackValidationFailed(message="Duplicate names %s" %
                                         dup_names)
 
-        for res in self:
+        for res in self.dependencies:
             try:
                 result = res.validate()
             except exception.Error as ex:
@@ -321,7 +327,7 @@ class Stack(object):
         during its lifecycle using the configured deferred authentication
         method.
         '''
-        return any(res.requires_deferred_auth for res in self)
+        return any(res.requires_deferred_auth for res in self.values())
 
     def state_set(self, action, status, reason):
         '''Update the stack state in the database.'''

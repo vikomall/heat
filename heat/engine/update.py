@@ -38,8 +38,8 @@ class StackUpdate(object):
 
         self.rollback = rollback
 
-        self.existing_snippets = dict((r.name, r.parsed_template())
-                                      for r in self.existing_stack)
+        self.existing_snippets = dict((n, r.parsed_template())
+                                      for n, r in self.existing_stack.items())
 
     def __repr__(self):
         if self.rollback:
@@ -84,9 +84,9 @@ class StackUpdate(object):
     def _exchange_stacks(existing_res, prev_res):
         db_api.resource_exchange_stacks(existing_res.stack.context,
                                         existing_res.id, prev_res.id)
-        existing_res.stack, prev_res.stack = prev_res.stack, existing_res.stack
-        existing_res.stack[existing_res.name] = existing_res
-        prev_res.stack[prev_res.name] = prev_res
+        prev_stack, existing_stack = prev_res.stack, existing_res.stack
+        prev_stack[existing_res.name] = existing_res
+        existing_stack[prev_res.name] = prev_res
 
     @scheduler.wrappertask
     def _create_resource(self, new_res):
@@ -113,11 +113,9 @@ class StackUpdate(object):
         if res_name in self.existing_stack:
             logger.debug("Backing up existing Resource %s" % res_name)
             existing_res = self.existing_stack[res_name]
-            existing_res.stack = self.previous_stack
             self.previous_stack[res_name] = existing_res
             existing_res.state_set(existing_res.UPDATE, existing_res.COMPLETE)
 
-        new_res.stack = self.existing_stack
         self.existing_stack[res_name] = new_res
         yield new_res.create()
 
@@ -167,7 +165,7 @@ class StackUpdate(object):
             yield existing_res.destroy()
 
         if res_name not in self.new_stack:
-            del self.existing_stack.resources[res_name]
+            del self.existing_stack[res_name]
 
     def dependencies(self):
         '''
@@ -186,8 +184,8 @@ class StackUpdate(object):
             for e in existing_deps.graph(reverse=True).edges():
                 yield e
             # Don't cleanup old resources until after they have been replaced
-            for res in self.existing_stack:
-                if res.name in self.new_stack:
-                    yield (res, self.new_stack[res.name])
+            for name, res in self.existing_stack.iteritems():
+                if name in self.new_stack:
+                    yield (res, self.new_stack[name])
 
         return dependencies.Dependencies(edges())

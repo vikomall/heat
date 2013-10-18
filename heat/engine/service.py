@@ -103,20 +103,28 @@ class EngineService(service.Service):
         pass
 
     def _start_watch_task(self, stack_id, cnxt):
-        wrs = db_api.watch_rule_get_all_by_stack(cnxt,
-                                                 stack_id)
 
-        now = timeutils.utcnow()
-        start_watch_thread = False
-        for wr in wrs:
-            # reset the last_evaluated so we don't fire off alarms when
-            # the engine has not been running.
-            db_api.watch_rule_update(cnxt, wr.id, {'last_evaluated': now})
+        def stack_has_a_watchrule(sid):
+            wrs = db_api.watch_rule_get_all_by_stack(cnxt, sid)
 
-            if wr.state != rpc_api.WATCH_STATE_CEILOMETER_CONTROLLED:
-                start_watch_thread = True
+            now = timeutils.utcnow()
+            start_watch_thread = False
+            for wr in wrs:
+                # reset the last_evaluated so we don't fire off alarms when
+                # the engine has not been running.
+                db_api.watch_rule_update(cnxt, wr.id, {'last_evaluated': now})
 
-        if start_watch_thread:
+                if wr.state != rpc_api.WATCH_STATE_CEILOMETER_CONTROLLED:
+                    start_watch_thread = True
+
+            children = db_api.stack_get_all_by_owner_id(cnxt, sid)
+            for child in children:
+                if stack_has_a_watchrule(child.id):
+                    start_watch_thread = True
+
+            return start_watch_thread
+
+        if stack_has_a_watchrule(stack_id):
             self._timer_in_thread(stack_id, self._periodic_watcher_task,
                                   sid=stack_id)
 
@@ -234,7 +242,6 @@ class EngineService(service.Service):
         :param template: Template of stack you want to create.
         :param params: Stack Input Params
         :param files: Files referenced from the template
-                      (currently provider templates).
         :param args: Request parameters/args passed from API
         """
         logger.info('template is %s' % template)
@@ -299,6 +306,14 @@ class EngineService(service.Service):
 
         current_stack = parser.Stack.load(cnxt, stack=db_stack)
 
+        if current_stack.action == current_stack.SUSPEND:
+            msg = _('Updating a stack when it is suspended')
+            raise exception.NotSupported(feature=msg)
+
+        if current_stack.status == current_stack.IN_PROGRESS:
+            msg = _('Updating a stack when another action is in progress')
+            raise exception.NotSupported(feature=msg)
+
         # Now parse the template and any parameters for the updated
         # stack definition.
         tmpl = parser.Template(template, files=files)
@@ -354,6 +369,12 @@ class EngineService(service.Service):
                         'Found a [%s] instead' % type_res}
 
             ResourceClass = resource.get_class(res['Type'])
+            if ResourceClass == resources.template_resource.TemplateResource:
+                # we can't validate a TemplateResource unless we instantiate
+                # it as we need to download the template and convert the
+                # paramerters into properties_schema.
+                continue
+
             props = properties.Properties(ResourceClass.properties_schema,
                                           res.get('Properties', {}))
             try:
@@ -590,13 +611,9 @@ class EngineService(service.Service):
 
         stack = parser.Stack.load(cnxt, stack=s)
 
-        if resource_name is not None:
-            name_match = lambda r: r.name == resource_name
-        else:
-            name_match = lambda r: True
-
         return [api.format_stack_resource(resource)
-                for resource in stack if name_match(resource)]
+                for name, resource in stack.iteritems()
+                if resource_name is None or name == resource_name]
 
     @request_context
     def list_stack_resources(self, cnxt, stack_identity):
@@ -605,7 +622,7 @@ class EngineService(service.Service):
         stack = parser.Stack.load(cnxt, stack=s)
 
         return [api.format_stack_resource(resource, detail=False)
-                for resource in stack]
+                for resource in stack.values()]
 
     @request_context
     def stack_suspend(self, cnxt, stack_identity):
@@ -671,18 +688,13 @@ class EngineService(service.Service):
         # resource_name to be a WaitCondition resource, and other
         # resources may refer to WaitCondition Fn::GetAtt Data, which
         # is updated here.
-        for res in refresh_stack:
+        for res in refresh_stack.dependencies:
             if res.name != resource_name and res.id is not None:
                 res.metadata_update()
 
         return resource.metadata
 
-    def _periodic_watcher_task(self, sid):
-        """
-        Periodic task, created for each stack, triggers watch-rule
-        evaluation for all rules defined for the stack
-        sid = stack ID
-        """
+    def _check_stack_watches(self, sid):
         # Retrieve the stored credentials & create context
         # Require admin=True to the stack_get to defeat tenant
         # scoping otherwise we fail to retrieve the stack
@@ -694,6 +706,11 @@ class EngineService(service.Service):
                          sid)
             return
         stack_context = self._load_user_creds(stack.user_creds_id)
+
+        # recurse into any nested stacks.
+        children = db_api.stack_get_all_by_owner_id(admin_context, sid)
+        for child in children:
+            self._check_stack_watches(child.id)
 
         # Get all watchrules for this stack and evaluate them
         try:
@@ -708,7 +725,7 @@ class EngineService(service.Service):
                 action(details=details)
 
             stk = parser.Stack.load(stack_context, stack=stack)
-            for res in stk:
+            for res in stk.itervalues():
                 res.metadata_update()
 
         for wr in wrs:
@@ -717,6 +734,14 @@ class EngineService(service.Service):
             if actions:
                 self._start_in_thread(sid, run_alarm_action, actions,
                                       rule.get_details())
+
+    def _periodic_watcher_task(self, sid):
+        """
+        Periodic task, created for each stack, triggers watch-rule
+        evaluation for all rules defined for the stack
+        sid = stack ID
+        """
+        self._check_stack_watches(sid)
 
     @request_context
     def create_watch_data(self, cnxt, watch_name, stats_data):

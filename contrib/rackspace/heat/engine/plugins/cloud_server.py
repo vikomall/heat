@@ -24,7 +24,7 @@ from heat.engine.resources import instance
 from heat.engine.resources import nova_utils
 from heat.db.sqlalchemy import api as db_api
 
-from . import rackspace_resource
+from . import rackspace_resource  # noqa
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +60,8 @@ chmod 600 /var/lib/cloud/seed/nocloud-net/*
 
 # Run cloud-init & cfn-init
 cloud-init start || cloud-init init
-bash -x /var/lib/cloud/data/cfn-userdata > /root/cfn-userdata.log 2>&1
+bash -x /var/lib/cloud/data/cfn-userdata > /root/cfn-userdata.log 2>&1 ||
+exit 42
 """
 
     # - Ubuntu 12.04: Verified working
@@ -143,10 +144,14 @@ zypper --non-interactive in cloud-init python-boto python-pip gcc python-devel
                      'rhel': rhel_script,
                      'ubuntu': ubuntu_script}
 
+    script_error_msg = ("The %(path)s script exited with a non-zero exit "
+                        "status.  To see the error message, log into the "
+                        "server and view %(log)s")
+
     # Template keys supported for handle_update.  Properties not
     # listed here trigger an UpdateReplace
     update_allowed_keys = ('Metadata', 'Properties')
-    update_allowed_properties = ('flavor', 'name')
+    update_allowed_properties = ('flavor')
 
     def __init__(self, name, json_snippet, stack):
         super(CloudServer, self).__init__(name, json_snippet, stack)
@@ -155,6 +160,8 @@ zypper --non-interactive in cloud-init python-boto python-pip gcc python-devel
         self._distro = None
         self._public_ip = None
         self._private_ip = None
+        self._flavor = None
+        self._image = None
         self.rs = rackspace_resource.RackspaceResource(name,
                                                        json_snippet,
                                                        stack)
@@ -185,8 +192,8 @@ zypper --non-interactive in cloud-init python-boto python-pip gcc python-devel
         """Get the Linux distribution for this server."""
         if not self._distro:
             logger.debug("Calling nova().images.get()")
-            image = self.nova().images.get(self.properties['image'])
-            self._distro = image.metadata['os_distro']
+            image_data = self.nova().images.get(self.image)
+            self._distro = image_data.metadata['os_distro']
         return self._distro
 
     @property
@@ -195,10 +202,19 @@ zypper --non-interactive in cloud-init python-boto python-pip gcc python-devel
         return self.image_scripts[self.distro]
 
     @property
-    def flavors(self):
+    def flavor(self):
         """Get the flavors from the API."""
-        logger.debug("Calling nova().flavors.list()")
-        return [flavor.id for flavor in self.nova().flavors.list()]
+        if not self._flavor:
+            self._flavor = nova_utils.get_flavor_id(self.nova(),
+                                                    self.properties['flavor'])
+        return self._flavor
+
+    @property
+    def image(self):
+        if not self._image:
+            self._image = nova_utils.get_image_id(self.nova(),
+                                                  self.properties['image'])
+        return self._image
 
     @property
     def private_key(self):
@@ -252,14 +268,14 @@ zypper --non-interactive in cloud-init python-boto python-pip gcc python-devel
 
     def validate(self):
         """Validate user parameters."""
-        if self.properties['flavor'] not in self.flavors:
-            return {'Error': "flavor not found."}
+        self.flavor
+        self.image
 
         # It's okay if there's no script, as long as user_data and
         # metadata are empty
         if not self.script and self.has_userdata:
-            return {'Error': "user_data/metadata are not supported with %s." %
-                    self.properties['image']}
+            return {'Error': "user_data/metadata are not supported for image"
+                    " %s." % self.properties['image']}
 
     def _run_ssh_command(self, command):
         """Run a shell command on the Cloud Server via SSH."""
@@ -271,9 +287,9 @@ zypper --non-interactive in cloud-init python-boto python-pip gcc python-devel
             ssh.connect(self.public_ip,
                         username="root",
                         key_filename=private_key_file.name)
-            stdin, stdout, stderr = ssh.exec_command(command)
-            logger.debug(stdout.read())
-            logger.debug(stderr.read())
+            chan = ssh.get_transport().open_session()
+            chan.exec_command(command)
+            return chan.recv_exit_status()
 
     def _sftp_files(self, files):
         """Transfer files to the Cloud Server via SFTP."""
@@ -296,8 +312,6 @@ zypper --non-interactive in cloud-init python-boto python-pip gcc python-devel
         running, so we have to transfer the user-data file to the
         server and then trigger cloud-init.
         """
-        # Retrieve server creation parameters from properties
-        flavor = self.properties['flavor']
 
         # Generate SSH public/private keypair
         if self._private_key is not None:
@@ -317,8 +331,8 @@ zypper --non-interactive in cloud-init python-boto python-pip gcc python-devel
         client = self.nova().servers
         logger.debug("Calling nova().servers.create()")
         server = client.create(self.physical_resource_name(),
-                               self.properties['image'],
-                               flavor,
+                               self.image,
+                               self.flavor,
                                files=personality_files)
 
         # Save resource ID to db
@@ -377,7 +391,15 @@ zypper --non-interactive in cloud-init python-boto python-pip gcc python-devel
 
             # Connect via SSH and run script
             cmd = "bash -ex /root/heat-script.sh > /root/heat-script.log 2>&1"
-            self._run_ssh_command(cmd)
+            exit_code = self._run_ssh_command(cmd)
+            if exit_code == 42:
+                raise exception.Error(self.script_error_msg %
+                                      {'path': "cfn-userdata",
+                                       'log': "/root/cfn-userdata.log"})
+            elif exit_code != 0:
+                raise exception.Error(self.script_error_msg %
+                                      {'path': "heat-script.sh",
+                                       'log': "/root/heat-script.log"})
 
         return True
 
@@ -404,13 +426,6 @@ zypper --non-interactive in cloud-init python-boto python-pip gcc python-devel
         Cloud Server.  If any other parameters changed, re-create the
         Cloud Server with the new parameters.
         """
-        # If name is the only update, fail update
-        if prop_diff.keys() == ['name'] and \
-           tmpl_diff.keys() == ['Properties']:
-            raise exception.NotSupported(feature="Cloud Server rename")
-        # Other updates were successful, so don't cause update to fail
-        elif 'name' in prop_diff:
-            logger.info("Cloud Server rename not supported.")
 
         if 'Metadata' in tmpl_diff:
             self.metadata = json_snippet['Metadata']
@@ -422,14 +437,19 @@ zypper --non-interactive in cloud-init python-boto python-pip gcc python-devel
 
             command = "bash -x /var/lib/cloud/data/cfn-userdata > " + \
                       "/root/cfn-userdata.log 2>&1"
-            self._run_ssh_command(command)
+            exit_code = self._run_ssh_command(command)
+            if exit_code != 0:
+                raise exception.Error(self.script_error_msg %
+                                      {'path': "cfn-userdata",
+                                       'log': "/root/cfn-userdata.log"})
 
         if 'flavor' in prop_diff:
-            self.flavor = json_snippet['Properties']['flavor']
-            self.server.resize(self.flavor)
+            flav = json_snippet['Properties']['flavor']
+            new_flavor = nova_utils.get_flavor_id(self.nova(), flav)
+            self.server.resize(new_flavor)
             resize = scheduler.TaskRunner(nova_utils.check_resize,
                                           self.server,
-                                          self.flavor)
+                                          flav)
             resize.start()
             return resize
 

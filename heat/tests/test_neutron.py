@@ -289,7 +289,7 @@ class NeutronNetTest(HeatTestCase):
 
         neutronclient.Client.show_network(
             'fc68ea2c-b60b-4b4f-bd82-94ec81110766'
-        ).AndRaise(qe.NeutronClientException(status_code=404))
+        ).AndRaise(qe.NetworkNotFoundClient())
 
         neutronclient.Client.show_network(
             'fc68ea2c-b60b-4b4f-bd82-94ec81110766'
@@ -321,11 +321,11 @@ class NeutronNetTest(HeatTestCase):
 
         neutronclient.Client.show_network(
             'fc68ea2c-b60b-4b4f-bd82-94ec81110766'
-        ).AndRaise(qe.NeutronClientException(status_code=404))
+        ).AndRaise(qe.NetworkNotFoundClient())
 
         neutronclient.Client.delete_network(
             'fc68ea2c-b60b-4b4f-bd82-94ec81110766'
-        ).AndRaise(qe.NeutronClientException(status_code=404))
+        ).AndRaise(qe.NetworkNotFoundClient())
 
         self.m.ReplayAll()
         t = template_format.parse(neutron_template)
@@ -763,6 +763,104 @@ class NeutronRouterTest(HeatTestCase):
         scheduler.TaskRunner(rsrc.delete)()
         self.m.VerifyAll()
 
+    def test_router_interface_with_old_data(self):
+        clients.OpenStackClients.keystone().AndReturn(
+            fakes.FakeKeystoneClient())
+        neutronclient.Client.add_interface_router(
+            '3e46229d-8fce-4733-819a-b5fe630550f8',
+            {'subnet_id': '91e47a57-7508-46fe-afc9-fc454e8580e1'}
+        ).AndReturn(None)
+        neutronclient.Client.remove_interface_router(
+            '3e46229d-8fce-4733-819a-b5fe630550f8',
+            {'subnet_id': '91e47a57-7508-46fe-afc9-fc454e8580e1'}
+        ).AndReturn(None)
+        neutronclient.Client.remove_interface_router(
+            '3e46229d-8fce-4733-819a-b5fe630550f8',
+            {'subnet_id': '91e47a57-7508-46fe-afc9-fc454e8580e1'}
+        ).AndRaise(qe.NeutronClientException(status_code=404))
+
+        self.m.ReplayAll()
+        t = template_format.parse(neutron_template)
+        stack = utils.parse_stack(t)
+
+        rsrc = self.create_router_interface(
+            t, stack, 'router_interface', properties={
+                'router_id': '3e46229d-8fce-4733-819a-b5fe630550f8',
+                'subnet_id': '91e47a57-7508-46fe-afc9-fc454e8580e1'
+            })
+        self.assertEqual('3e46229d-8fce-4733-819a-b5fe630550f8'
+                         ':subnet_id=91e47a57-7508-46fe-afc9-fc454e8580e1',
+                         rsrc.resource_id)
+        (rsrc.resource_id) = ('3e46229d-8fce-4733-819a-b5fe630550f8:'
+                              '91e47a57-7508-46fe-afc9-fc454e8580e1')
+        scheduler.TaskRunner(rsrc.delete)()
+        self.assertEqual('3e46229d-8fce-4733-819a-b5fe630550f8'
+                         ':91e47a57-7508-46fe-afc9-fc454e8580e1',
+                         rsrc.resource_id)
+        rsrc.state_set(rsrc.CREATE, rsrc.COMPLETE, 'to delete again')
+        scheduler.TaskRunner(rsrc.delete)()
+        self.m.VerifyAll()
+
+    def test_router_interface_with_port_id(self):
+        clients.OpenStackClients.keystone().AndReturn(
+            fakes.FakeKeystoneClient())
+        neutronclient.Client.add_interface_router(
+            'ae478782-53c0-4434-ab16-49900c88016c',
+            {'port_id': '9577cafd-8e98-4059-a2e6-8a771b4d318e'}
+        ).AndReturn(None)
+        neutronclient.Client.remove_interface_router(
+            'ae478782-53c0-4434-ab16-49900c88016c',
+            {'port_id': '9577cafd-8e98-4059-a2e6-8a771b4d318e'}
+        ).AndReturn(None)
+        neutronclient.Client.remove_interface_router(
+            'ae478782-53c0-4434-ab16-49900c88016c',
+            {'port_id': '9577cafd-8e98-4059-a2e6-8a771b4d318e'}
+        ).AndRaise(qe.NeutronClientException(status_code=404))
+
+        self.m.ReplayAll()
+        t = template_format.parse(neutron_template)
+        stack = utils.parse_stack(t)
+
+        rsrc = self.create_router_interface(
+            t, stack, 'router_interface', properties={
+                'router_id': 'ae478782-53c0-4434-ab16-49900c88016c',
+                'port_id': '9577cafd-8e98-4059-a2e6-8a771b4d318e'
+            })
+        scheduler.TaskRunner(rsrc.delete)()
+        rsrc.state_set(rsrc.CREATE, rsrc.COMPLETE, 'to delete again')
+        scheduler.TaskRunner(rsrc.delete)()
+        self.m.VerifyAll()
+
+    def test_router_interface_validate(self):
+        t = template_format.parse(neutron_template)
+        json = t['Resources']['router_interface']
+        json['Properties'] = {
+            'router_id': 'ae478782-53c0-4434-ab16-49900c88016c',
+            'subnet_id': '9577cafd-8e98-4059-a2e6-8a771b4d318e',
+            'port_id': '9577cafd-8e98-4059-a2e6-8a771b4d318e'}
+        stack = utils.parse_stack(t)
+        res = router.RouterInterface('router_interface', json, stack)
+        self.assertRaises(exception.ResourcePropertyConflict, res.validate)
+        json['Properties'] = {
+            'router_id': 'ae478782-53c0-4434-ab16-49900c88016c',
+            'port_id': '9577cafd-8e98-4059-a2e6-8a771b4d318e'}
+        stack = utils.parse_stack(t)
+        res = router.RouterInterface('router_interface', json, stack)
+        self.assertEqual(None, res.validate())
+        json['Properties'] = {
+            'router_id': 'ae478782-53c0-4434-ab16-49900c88016c',
+            'subnet_id': '9577cafd-8e98-4059-a2e6-8a771b4d318e'}
+        stack = utils.parse_stack(t)
+        res = router.RouterInterface('router_interface', json, stack)
+        self.assertEqual(None, res.validate())
+        json['Properties'] = {
+            'router_id': 'ae478782-53c0-4434-ab16-49900c88016c'}
+        stack = utils.parse_stack(t)
+        res = router.RouterInterface('router_interface', json, stack)
+        ex = self.assertRaises(exception.StackValidationFailed, res.validate)
+        self.assertEqual("Either subnet_id or port_id must be specified.",
+                         str(ex))
+
     def test_gateway_router(self):
         clients.OpenStackClients.keystone().AndReturn(
             fakes.FakeKeystoneClient())
@@ -903,7 +1001,7 @@ class NeutronFloatingIPTest(HeatTestCase):
         }})
         neutronclient.Client.show_port(
             'fc68ea2c-b60b-4b4f-bd82-94ec81110766'
-        ).AndRaise(qe.NeutronClientException(status_code=404))
+        ).AndRaise(qe.PortNotFoundClient())
         neutronclient.Client.show_port(
             'fc68ea2c-b60b-4b4f-bd82-94ec81110766'
         ).MultipleTimes().AndReturn({'port': {
@@ -987,7 +1085,7 @@ class NeutronFloatingIPTest(HeatTestCase):
 
         neutronclient.Client.show_port(
             'fc68ea2c-b60b-4b4f-bd82-94ec81110766'
-        ).AndRaise(qe.NeutronClientException(status_code=404))
+        ).AndRaise(qe.PortNotFoundClient())
 
         neutronclient.Client.delete_floatingip(
             'fc68ea2c-b60b-4b4f-bd82-94ec81110766'
@@ -1001,7 +1099,7 @@ class NeutronFloatingIPTest(HeatTestCase):
 
         neutronclient.Client.delete_port(
             'fc68ea2c-b60b-4b4f-bd82-94ec81110766'
-        ).AndRaise(qe.NeutronClientException(status_code=404))
+        ).AndRaise(qe.PortNotFoundClient())
 
         neutronclient.Client.delete_floatingip(
             'fc68ea2c-b60b-4b4f-bd82-94ec81110766'
