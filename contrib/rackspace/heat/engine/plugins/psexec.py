@@ -21,11 +21,10 @@ import os
 import cmd
 
 #from impacket import version
-from impacket.smbconnection import *
-#from impacket.dcerpc import dcerpc_v4
+from impacket.smbconnection import SMB_DIALECT
+from impacket.smbconnection import smb
+from impacket.smbconnection import SMBConnection
 from impacket.dcerpc import dcerpc
-#from impacket.dcerpc import srvsvc
-#from impacket.dcerpc import svcctl
 from impacket.dcerpc import transport
 from impacket.structure import Structure
 from threading import Thread
@@ -252,7 +251,7 @@ class Pipes(Thread):
                 '*SMBSERVER',
                 self.transport.get_smb_connection().getRemoteHost(),
                 sess_port=self.port,
-                preferredDialect=dialect)
+                preferredDialect=dialect)  # NOQA
             user, passwd, domain, lm, nt = self.credentials
             self.server.login(user, passwd, domain, lm, nt)
             lock.release()
@@ -283,7 +282,7 @@ class RemoteStdOutPipe(Pipes):
             else:
                 try:
                         global LastDataSent
-                        if ans != LastDataSent:
+                        if ans != LastDataSent:  # NOQA
                             sys.stdout.write(ans)
                             sys.stdout.flush()
                         else:
@@ -338,7 +337,7 @@ class RemoteShell(cmd.Cmd):
         self.transferClient = SMBConnection('*SMBSERVER',
                                             self.server.getRemoteHost(),
                                             sess_port=self.port,
-                                            preferredDialect=dialect)
+                                            preferredDialect=dialect)  # NOQA
         user, passwd, domain, lm, nt = self.credentials
         self.transferClient.login(user, passwd, domain, lm, nt)
 
