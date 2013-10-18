@@ -394,7 +394,6 @@ class WinServer(rackspace_resource.RackspaceResource):
         # check validity of given image
         if self.properties['image'] not in self.images:
             return {'Error': 'Image not found.'}
-        # TODO(Vijendar):
         ## check validity of gvien flavor
         #if self.properties['flavor'] not in self.flavors:
             #return {'Error': "flavor not found."}
