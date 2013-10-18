@@ -244,8 +244,6 @@ class WinServer(rackspace_resource.RackspaceResource):
         if instance is not None:
             self.resource_id_set(instance.id)
 
-        #self.resource_id_set("68ce6cc6-2e8a-45ed-9ceb-9bd07bb72a1f")
-        #instance = self.nova().servers.get(self.resource_id)
         return instance
 
     def _is_time_to_get_status(self):
