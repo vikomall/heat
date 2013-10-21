@@ -28,6 +28,7 @@ from heat.openstack.common.gettextutils import _
 
 from heat.common import crypt
 from heat.common import exception
+from heat.db.sqlalchemy import migration
 from heat.db.sqlalchemy import models
 from heat.openstack.common.db.sqlalchemy import session as db_session
 
@@ -470,18 +471,26 @@ def watch_data_get_all(context):
     return results
 
 
-def purge_deleted(age):
-    if age is not None:
-        try:
-            age = int(age)
-        except ValueError:
-            raise exception.Error(_("age should be an integer"))
-        if age < 0:
-            raise exception.Error(_("age should be a positive integer"))
-    else:
-        age = 90
+def purge_deleted(age, granularity='days'):
+    try:
+        age = int(age)
+    except ValueError:
+        raise exception.Error(_("age should be an integer"))
+    if age < 0:
+        raise exception.Error(_("age should be a positive integer"))
 
-    time_line = datetime.now() - timedelta(days=age)
+    if granularity not in ('days', 'hours', 'minutes', 'seconds'):
+        raise exception.Error(
+            _("granularity should be days, hours, minutes, or seconds"))
+
+    if granularity == 'days':
+        age = age * 86400
+    elif granularity == 'hours':
+        age = age * 3600
+    elif granularity == 'minutes':
+        age = age * 60
+
+    time_line = datetime.now() - timedelta(seconds=age)
     engine = get_engine()
     meta = sqlalchemy.MetaData()
     meta.bind = engine
@@ -507,3 +516,13 @@ def purge_deleted(age):
         engine.execute(raw_template_del)
         user_creds_del = user_creds.delete().where(user_creds.c.id == s[2])
         engine.execute(user_creds_del)
+
+
+def db_sync(version=None):
+    """Migrate the database to `version` or the most recent version."""
+    return migration.db_sync(version=version)
+
+
+def db_version():
+    """Display the current database version."""
+    return migration.db_version()

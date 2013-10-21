@@ -14,6 +14,7 @@
 #    under the License.
 
 from heat.common.template_format import yaml
+from heat.common.template_format import yaml_loader
 
 
 SECTIONS = (PARAMETERS, RESOURCE_REGISTRY) = \
@@ -27,9 +28,9 @@ def parse(env_str):
     JSON or YAML format.
     '''
     try:
-        env = yaml.safe_load(env_str)
-    except (yaml.scanner.ScannerError, yaml.parser.ParserError) as e:
-        raise ValueError(e)
+        env = yaml.load(env_str, Loader=yaml_loader)
+    except yaml.YAMLError as yea:
+        raise ValueError(yea)
     else:
         if env is None:
             env = {}
