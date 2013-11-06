@@ -24,7 +24,7 @@ import novaclient.exceptions as novaexception
 
 from heat.common import exception
 from heat.engine.resources import nova_utils
-from . import rackspace_resource
+from heat.engine import resource
 from heat.openstack.common import log as logging
 
 logger = logging.getLogger(__name__)
@@ -114,7 +114,7 @@ class PsexecWrapper(object):
             raise exception.Error("process is still running")
 
 
-class WinServer(rackspace_resource.RackspaceResource):
+class WinServer(resource.Resource):
     '''
     Rackspace cloud Windows server resource.
     '''
@@ -407,12 +407,5 @@ class WinServer(rackspace_resource.RackspaceResource):
             return None
 
 
-# pyrax module is required to work with Rackspace cloud database provider.
-# If it is not installed, don't register clouddatabase provider
 def resource_mapping():
-    if rackspace_resource.PYRAX_INSTALLED:
-        return {
-            'Rackspace::Cloud::WinServer': WinServer,
-        }
-    else:
-        return {}
+    return {'Rackspace::Cloud::WinServer': WinServer}
