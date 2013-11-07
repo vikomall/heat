@@ -13,6 +13,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import time
+
 try:
     from pyrax.exceptions import ClientException
 except ImportError:
@@ -131,6 +133,7 @@ class CloudDBInstance(rackspace_resource.RackspaceResource):
         super(CloudDBInstance, self).__init__(name, json_snippet, stack)
         self.hostname = None
         self.href = None
+        self._last_time_stamp = None
 
     def handle_create(self):
         '''
@@ -155,10 +158,25 @@ class CloudDBInstance(rackspace_resource.RackspaceResource):
         self.href = instance.links[0]['href']
         return instance
 
+    def _is_time_to_get_status(self):
+        if self._last_time_stamp is None:
+            self._last_time_stamp = time.time()
+            return True
+
+        # For now get status for every 30secs
+        if time.time() - self._last_time_stamp > 30:
+            self._last_time_stamp = time.time()
+            return True
+
+        return False
+
     def check_create_complete(self, instance):
         '''
         Check if cloud DB instance creation is complete.
         '''
+        if not self._is_time_to_get_status():
+            return False
+
         instance.get()  # get updated attributes
         if instance.status == 'ERROR':
             instance.delete()
