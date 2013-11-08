@@ -17,7 +17,7 @@ import copy
 
 from heat.engine import properties
 from heat.engine import stack_resource
-from heat.common import exception
+from heat.common.exception import InvalidTemplateAttribute
 
 from heat.openstack.common import log as logging
 from heat.openstack.common.gettextutils import _
@@ -85,7 +85,15 @@ class ResourceGroup(stack_resource.StackResource):
         # make sure the nested resource is valid
         res_def = self.properties['resource_def']
         res_class = self.stack.env.get_class(res_def['type'])
-        res_inst = res_class("%s:resource_def" % self.name, res_def,
+        translated_res_def = {}
+        for attr, attr_value in res_def.iteritems():
+            if attr == 'type':
+                cfn_attr = 'Type'
+            if attr == 'properties':
+                cfn_attr = 'Properties'
+            translated_res_def[cfn_attr] = attr_value
+
+        res_inst = res_class("%s:resource_def" % self.name, translated_res_def,
                              self.stack)
         res_inst.validate()
 
@@ -97,10 +105,9 @@ class ResourceGroup(stack_resource.StackResource):
 
     def handle_update(self, new_snippet, tmpl_diff, prop_diff):
         count = prop_diff.get("count")
-        if count:
-            return self.update_with_template(self._assemble_nested(count),
-                                             {},
-                                             self.stack.timeout_mins)
+        return self.update_with_template(self._assemble_nested(count),
+                                         {},
+                                         self.stack.timeout_mins)
 
     def handle_delete(self):
         return self.delete_nested()
@@ -112,8 +119,8 @@ class ResourceGroup(stack_resource.StackResource):
             try:
                 res = self.nested()[parts[1]]
             except KeyError:
-                raise exception.InvalidTemplateAttribute(resource=self.name,
-                                                         key=key)
+                raise InvalidTemplateAttribute(resource=self.name,
+                                               key=key)
             else:
                 return res.FnGetAtt(attr_name)
         else:
