@@ -406,6 +406,11 @@ class WinServer(resource.Resource):
         else:
             return None
 
-
-def resource_mapping():
-    return {'Rackspace::Cloud::WinServer': WinServer}
+try:
+    import pyrax  # noqa
+except ImportError:
+    def resource_mapping():
+        return {}
+else:
+    def resource_mapping():
+        return {'Rackspace::Cloud::WinServer': WinServer}
