@@ -90,7 +90,10 @@ cfn-create-aws-symlinks
 
     # - Centos 6.4: Verified working
     centos_script = base_script % """\
-rpm -ivh http://mirror.rackspace.com/epel/6/i386/epel-release-6-8.noarch.rpm
+if ! (yum repolist 2> /dev/null | egrep -q "^[\!\*]?epel ");
+then
+ rpm -ivh http://mirror.rackspace.com/epel/6/i386/epel-release-6-8.noarch.rpm
+fi
 yum install -y cloud-init python-boto python-pip gcc python-devel \
   python-argparse
 pip-python install heat-cfntools
@@ -98,7 +101,10 @@ pip-python install heat-cfntools
 
     # - RHEL 6.4: Verified working
     rhel_script = base_script % """\
-rpm -ivh http://mirror.rackspace.com/epel/6/i386/epel-release-6-8.noarch.rpm
+if ! (yum repolist 2> /dev/null | egrep -q "^[\!\*]?epel ");
+then
+ rpm -ivh http://mirror.rackspace.com/epel/6/i386/epel-release-6-8.noarch.rpm
+fi
 # The RPM DB stays locked for a few secs
 while fuser /var/lib/rpm/*; do sleep 1; done
 yum install -y cloud-init python-boto python-pip gcc python-devel \
@@ -381,6 +387,41 @@ zypper --non-interactive in cloud-init python-boto python-pip gcc python-devel
         """Check if server creation is complete and handle server configs."""
         if not self._check_active(cookie):
             return False
+
+        server = cookie[0]
+        server.get()
+        if 'rack_connect' in self.context.roles:  # Account has RackConnect
+            if 'rackconnect_automation_status' not in server.metadata:
+                logger.debug("RackConnect server does not have the "
+                             "rackconnect_automation_status metadata tag yet")
+                return False
+
+            rc_status = server.metadata['rackconnect_automation_status']
+            logger.debug("RackConnect automation status: " + rc_status)
+
+            if rc_status == 'DEPLOYING':
+                return False
+
+            elif rc_status == 'DEPLOYED':
+                self._public_ip = None  # The public IP changed, forget old one
+
+            elif rc_status == 'FAILED':
+                raise exception.Error("RackConnect automation FAILED")
+
+            elif rc_status == 'UNPROCESSABLE':
+                reason = server.metadata.get(
+                    "rackconnect_unprocessable_reason", None)
+                if reason is not None:
+                    logger.warning("RackConnect unprocessable reason: "
+                                   + reason)
+                # UNPROCESSABLE means the RackConnect automation was
+                # not attempted (eg. Cloud Server in a different DC
+                # than dedicated gear, so RackConnect does not apply).
+                # It is okay if we do not raise an exception.
+
+            else:
+                raise exception.Error("Unknown RackConnect automation status: "
+                                      + rc_status)
 
         if self.has_userdata:
             # Create heat-script and userdata files on server

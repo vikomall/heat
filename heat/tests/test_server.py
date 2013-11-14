@@ -142,21 +142,6 @@ class ServersTest(HeatTestCase):
         self.assertEqual('::babe:4317:0A83', server.FnGetAtt('accessIPv6'))
         self.m.VerifyAll()
 
-    def test_server_create_err_toolong(self):
-        # Attempt to create a server with a 64 character name should fail
-        # instance name is name_s-name-xxxxxxxxxxxx, so 24 characters gives
-        # a 64 character physical_resource_name
-        return_server = self.fc.servers.list()[1]
-        name = 'e' * 24
-        error = self.assertRaises(exception.ResourceFailure,
-                                  self._create_test_server,
-                                  return_server,
-                                  name, stub_create=False)
-        substr = ('length 64 > 63 characters, '
-                  'please reduce the length of stack or resource names')
-        self.assertIn(substr, str(error))
-        self.m.VerifyAll()
-
     def test_server_create_with_image_id(self):
         return_server = self.fc.servers.list()[1]
         server = self._setup_test_server(return_server,
@@ -222,7 +207,8 @@ class ServersTest(HeatTestCase):
                              {'id': 4, 'name': 'CentOS 5.2'}]}))
         self.m.ReplayAll()
 
-        self.assertRaises(exception.NoUniqueImageFound, server.handle_create)
+        self.assertRaises(exception.PhysicalResourceNameAmbiguity,
+                          server.handle_create)
 
         self.m.VerifyAll()
 
@@ -620,13 +606,13 @@ class ServersTest(HeatTestCase):
         self.assertEqual(server.state, (server.UPDATE, server.FAILED))
         self.m.VerifyAll()
 
-    def test_server_update_replace(self):
+    def test_server_update_attr_replace(self):
         return_server = self.fc.servers.list()[1]
         server = self._create_test_server(return_server,
                                           'update_rep')
 
         update_template = copy.deepcopy(server.t)
-        update_template['Notallowed'] = {'test': 123}
+        update_template['UpdatePolicy'] = {'test': 123}
         updater = scheduler.TaskRunner(server.update, update_template)
         self.assertRaises(resource.UpdateReplace, updater)
 
