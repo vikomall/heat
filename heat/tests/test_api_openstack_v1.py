@@ -26,6 +26,7 @@ from heat.common.wsgi import Request
 from heat.common import urlfetch
 from heat.openstack.common.rpc import common as rpc_common
 from heat.rpc import api as rpc_api
+from heat.rpc import client as rpc_client
 from heat.tests.common import HeatTestCase
 
 import heat.api.openstack.v1 as api_v1
@@ -33,6 +34,7 @@ import heat.api.openstack.v1.stacks as stacks
 import heat.api.openstack.v1.resources as resources
 import heat.api.openstack.v1.events as events
 import heat.api.openstack.v1.actions as actions
+import heat.api.openstack.v1.build_info as build_info
 from heat.tests import utils
 
 import heat.api.middleware.fault as fault
@@ -225,14 +227,14 @@ class ControllerTest(object):
     def __init__(self, *args, **kwargs):
         super(ControllerTest, self).__init__(*args, **kwargs)
 
-        cfg.CONF.set_default('host', 'host')
+        cfg.CONF.set_default('host', 'server.test')
         self.topic = rpc_api.ENGINE_TOPIC
         self.api_version = '1.0'
         self.tenant = 't'
 
     def _environ(self, path):
         return {
-            'SERVER_NAME': 'heat.example.com',
+            'SERVER_NAME': 'server.test',
             'SERVER_PORT': 8004,
             'SCRIPT_NAME': '/v1',
             'PATH_INFO': '/%s' % self.tenant + path,
@@ -257,6 +259,9 @@ class ControllerTest(object):
     def _delete(self, path):
         return self._simple_request(path, method='DELETE')
 
+    def _abandon(self, path):
+        return self._simple_request(path, method='DELETE')
+
     def _data_request(self, path, data, content_type='application/json',
                       method='POST'):
         environ = self._environ(path)
@@ -274,7 +279,7 @@ class ControllerTest(object):
         return self._data_request(path, data, content_type, method='PUT')
 
     def _url(self, id):
-        host = 'heat.example.com:8004'
+        host = 'server.test:8004'
         path = '/v1/%(tenant)s/stacks/%(stack_name)s/%(stack_id)s%(path)s' % id
         return 'http://%s%s' % (host, path)
 
@@ -341,7 +346,7 @@ class StackControllerTest(ControllerTest, HeatTestCase):
         }
         self.assertEqual(result, expected)
         default_args = {'limit': None, 'sort_keys': None, 'marker': None,
-                        'sort_dir': None}
+                        'sort_dir': None, 'filters': {}}
         mock_call.assert_called_once_with(req.context, self.topic,
                                           {'namespace': None,
                                           'method': 'list_stacks',
@@ -350,7 +355,7 @@ class StackControllerTest(ControllerTest, HeatTestCase):
                                           None)
 
     @mock.patch.object(rpc, 'call')
-    def test_index_whitelists_request_params(self, mock_call):
+    def test_index_whitelists_pagination_params(self, mock_call):
         params = {
             'limit': 'fake limit',
             'sort_keys': 'fake sort keys',
@@ -361,16 +366,74 @@ class StackControllerTest(ControllerTest, HeatTestCase):
         req = self._get('/stacks', params=params)
         mock_call.return_value = []
 
-        result = self.controller.index(req, tenant_id='fake_tenant_id')
+        result = self.controller.index(req, tenant_id=self.tenant)
 
         rpc_call_args, _ = mock_call.call_args
         engine_args = rpc_call_args[2]['args']
-        self.assertEqual(4, len(engine_args))
+        self.assertEqual(5, len(engine_args))
         self.assertIn('limit', engine_args)
         self.assertIn('sort_keys', engine_args)
         self.assertIn('marker', engine_args)
         self.assertIn('sort_dir', engine_args)
+        self.assertIn('filters', engine_args)
         self.assertNotIn('balrog', engine_args)
+
+    @mock.patch.object(rpc, 'call')
+    def test_index_whitelist_filter_params(self, mock_call):
+        params = {
+            'status': 'fake status',
+            'name': 'fake name',
+            'balrog': 'you shall not pass!'
+        }
+        req = self._get('/stacks', params=params)
+        mock_call.return_value = []
+
+        result = self.controller.index(req, tenant_id=self.tenant)
+
+        rpc_call_args, _ = mock_call.call_args
+        engine_args = rpc_call_args[2]['args']
+        self.assertIn('filters', engine_args)
+
+        filters = engine_args['filters']
+        self.assertEqual(2, len(filters))
+        self.assertIn('status', filters)
+        self.assertIn('name', filters)
+        self.assertNotIn('balrog', filters)
+
+    def test_index_returns_stack_count_if_with_count_is_truthy(self):
+        params = {'with_count': 'True'}
+        req = self._get('/stacks', params=params)
+        engine = self.controller.engine
+
+        engine.list_stacks = mock.Mock(return_value=[])
+        engine.count_stacks = mock.Mock(return_value=0)
+
+        result = self.controller.index(req, tenant_id=self.tenant)
+        self.assertEqual(0, result['count'])
+
+    def test_index_doesnt_return_stack_count_if_with_count_is_falsy(self):
+        params = {'with_count': ''}
+        req = self._get('/stacks', params=params)
+        engine = self.controller.engine
+
+        engine.list_stacks = mock.Mock(return_value=[])
+        engine.count_stacks = mock.Mock()
+
+        result = self.controller.index(req, tenant_id=self.tenant)
+        self.assertNotIn('count', result)
+        assert not engine.count_stacks.called
+
+    @mock.patch.object(rpc_client.EngineClient, 'count_stacks')
+    def test_index_doesnt_break_with_old_engine(self, mock_count_stacks):
+        params = {'with_count': 'Truthy'}
+        req = self._get('/stacks', params=params)
+        engine = self.controller.engine
+
+        engine.list_stacks = mock.Mock(return_value=[])
+        mock_count_stacks.side_effect = AttributeError("Should not exist")
+
+        result = self.controller.index(req, tenant_id=self.tenant)
+        self.assertNotIn('count', result)
 
     @mock.patch.object(rpc, 'call')
     def test_detail(self, mock_call):
@@ -426,7 +489,7 @@ class StackControllerTest(ControllerTest, HeatTestCase):
 
         self.assertEqual(result, expected)
         default_args = {'limit': None, 'sort_keys': None, 'marker': None,
-                        'sort_dir': None}
+                        'sort_dir': None, 'filters': None}
         mock_call.assert_called_once_with(req.context, self.topic,
                                           {'namespace': None,
                                           'method': 'list_stacks',
@@ -925,14 +988,6 @@ class StackControllerTest(ControllerTest, HeatTestCase):
 
         req = self._get('/stacks/%(stack_name)s/%(stack_id)s' % identity)
 
-        error = heat_exc.InvalidTenant(target='a', actual='b')
-        self.m.StubOutWithMock(rpc, 'call')
-        rpc.call(req.context, self.topic,
-                 {'namespace': None,
-                  'method': 'show_stack',
-                  'args': {'stack_identity': dict(identity)},
-                  'version': self.api_version},
-                 None).AndRaise(to_remote_error(error))
         self.m.ReplayAll()
 
         resp = request_with_middleware(fault.FaultWrapper,
@@ -941,8 +996,8 @@ class StackControllerTest(ControllerTest, HeatTestCase):
                                        stack_name=identity.stack_name,
                                        stack_id=identity.stack_id)
 
-        self.assertEqual(resp.json['code'], 403)
-        self.assertEqual(resp.json['error']['type'], 'InvalidTenant')
+        self.assertEqual(resp.status_int, 403)
+        self.assertIn('403 Forbidden', str(resp))
         self.m.VerifyAll()
 
     def test_get_template(self):
@@ -1095,6 +1150,31 @@ class StackControllerTest(ControllerTest, HeatTestCase):
                           stack_id=identity.stack_id)
         self.m.VerifyAll()
 
+    def test_abandon(self):
+        identity = identifier.HeatIdentifier(self.tenant, 'wordpress', '6')
+        template = {u'Foo': u'bar'}
+        json_template = json.dumps(template)
+        parameters = {u'InstanceType': u'm1.xlarge'}
+        req = self._abandon('/stacks/%(stack_name)s/%(stack_id)s' % identity)
+
+        self.m.StubOutWithMock(rpc, 'call')
+        # Engine returns json data on abandon completion
+        expected = {"name": "test", "id": "123"}
+        rpc.call(req.context, self.topic,
+                 {'namespace': None,
+                  'method': 'abandon_stack',
+                  'args': {'stack_identity': dict(identity)},
+                  'version': self.api_version},
+                 None).AndReturn(expected)
+        self.m.ReplayAll()
+
+        ret = self.controller.abandon(req,
+                                      tenant_id=identity.tenant,
+                                      stack_name=identity.stack_name,
+                                      stack_id=identity.stack_id)
+        self.assertEqual(expected, ret)
+        self.m.VerifyAll()
+
     def test_delete_bad_name(self):
         identity = identifier.HeatIdentifier(self.tenant, 'wibble', '6')
         template = {u'Foo': u'bar'}
@@ -1204,7 +1284,7 @@ class StackControllerTest(ControllerTest, HeatTestCase):
     def test_list_resource_types_error(self):
         req = self._get('/resource_types')
 
-        error = heat_exc.ServerError(body='')
+        error = heat_exc.ResourceTypeNotFound(type_name='')
         self.m.StubOutWithMock(rpc, 'call')
         rpc.call(req.context, self.topic,
                  {'namespace': None,
@@ -1217,8 +1297,8 @@ class StackControllerTest(ControllerTest, HeatTestCase):
         resp = request_with_middleware(fault.FaultWrapper,
                                        self.controller.list_resource_types,
                                        req, tenant_id=self.tenant)
-        self.assertEqual(resp.json['code'], 500)
-        self.assertEqual(resp.json['error']['type'], 'ServerError')
+        self.assertEqual(resp.json['code'], 404)
+        self.assertEqual(resp.json['error']['type'], 'ResourceTypeNotFound')
         self.m.VerifyAll()
 
     def test_resource_schema(self):
@@ -1699,8 +1779,13 @@ class EventControllerTest(ControllerTest, HeatTestCase):
         cfgopts = DummyConfig()
         self.controller = events.EventController(options=cfgopts)
 
-    def test_resource_index(self):
-        event_id = '42'
+    def test_resource_index_event_id_integer(self):
+        self._test_resource_index('42')
+
+    def test_resource_index_event_id_uuid(self):
+        self._test_resource_index('a3455d8c-9f88-404d-a85b-5315293e67de')
+
+    def _test_resource_index(self, event_id):
         res_name = 'WikiDatabase'
         stack_identity = identifier.HeatIdentifier(self.tenant,
                                                    'wordpress', '6')
@@ -1777,8 +1862,13 @@ class EventControllerTest(ControllerTest, HeatTestCase):
         self.assertEqual(result, expected)
         self.m.VerifyAll()
 
-    def test_stack_index(self):
-        event_id = '42'
+    def test_stack_index_event_id_integer(self):
+        self._test_stack_index('42')
+
+    def test_stack_index_event_id_uuid(self):
+        self._test_stack_index('a3455d8c-9f88-404d-a85b-5315293e67de')
+
+    def _test_stack_index(self, event_id):
         res_name = 'WikiDatabase'
         stack_identity = identifier.HeatIdentifier(self.tenant,
                                                    'wordpress', '6')
@@ -1910,8 +2000,13 @@ class EventControllerTest(ControllerTest, HeatTestCase):
                           resource_name=res_name)
         self.m.VerifyAll()
 
-    def test_show(self):
-        event_id = '42'
+    def test_show_event_id_integer(self):
+        self._test_show('42')
+
+    def test_show_event_id_uuid(self):
+        self._test_show('a3455d8c-9f88-404d-a85b-5315293e67de')
+
+    def _test_show(self, event_id):
         res_name = 'WikiDatabase'
         stack_identity = identifier.HeatIdentifier(self.tenant,
                                                    'wordpress', '6')
@@ -1992,14 +2087,20 @@ class EventControllerTest(ControllerTest, HeatTestCase):
         self.assertEqual(result, expected)
         self.m.VerifyAll()
 
-    def test_show_nonexist(self):
-        event_id = '42'
+    def test_show_nonexist_event_id_integer(self):
+        self._test_show_nonexist('42', '41')
+
+    def test_show_nonexist_event_id_uuid(self):
+        self._test_show_nonexist('a3455d8c-9f88-404d-a85b-5315293e67de',
+                                 'x3455x8x-9x88-404x-x85x-5315293x67xx')
+
+    def _test_show_nonexist(self, event_id, search_event_id):
         res_name = 'WikiDatabase'
         stack_identity = identifier.HeatIdentifier(self.tenant,
                                                    'wordpress', '6')
         res_identity = identifier.ResourceIdentifier(resource_name=res_name,
                                                      **stack_identity)
-        ev_identity = identifier.EventIdentifier(event_id='41',
+        ev_identity = identifier.EventIdentifier(event_id=search_event_id,
                                                  **res_identity)
 
         req = self._get(stack_identity._tenant_path() +
@@ -2410,6 +2511,16 @@ class RoutesTest(HeatTestCase):
                 'event_id': 'dddd'
             })
 
+    def test_build_info(self):
+        self.assertRoute(
+            self.m,
+            '/fake_tenant/build_info',
+            'GET',
+            'build_info',
+            'BuildInfoController',
+            {'tenant_id': 'fake_tenant'}
+        )
+
 
 class ActionControllerTest(ControllerTest, HeatTestCase):
     '''
@@ -2448,7 +2559,7 @@ class ActionControllerTest(ControllerTest, HeatTestCase):
                                         stack_name=stack_identity.stack_name,
                                         stack_id=stack_identity.stack_id,
                                         body=body)
-        self.assertEqual(result, None)
+        self.assertIsNone(result)
         self.m.VerifyAll()
 
     def test_action_resume(self):
@@ -2472,7 +2583,7 @@ class ActionControllerTest(ControllerTest, HeatTestCase):
                                         stack_name=stack_identity.stack_name,
                                         stack_id=stack_identity.stack_id,
                                         body=body)
-        self.assertEqual(result, None)
+        self.assertIsNone(result)
         self.m.VerifyAll()
 
     def test_action_badaction(self):
@@ -2573,3 +2684,39 @@ class ActionControllerTest(ControllerTest, HeatTestCase):
                           stack_id=stack_identity.stack_id,
                           body=body)
         self.m.VerifyAll()
+
+
+class BuildInfoControllerTest(ControllerTest, HeatTestCase):
+    def test_theres_a_default_api_build_revision(self):
+        req = self._get('/build_info')
+        controller = build_info.BuildInfoController({})
+        controller.engine = mock.Mock()
+
+        response = controller.build_info(req, tenant_id=self.tenant)
+        self.assertIn('api', response)
+        self.assertIn('revision', response['api'])
+        self.assertEqual('unknown', response['api']['revision'])
+
+    @mock.patch.object(build_info.cfg, 'CONF')
+    def test_response_api_build_revision_from_config_file(self, mock_conf):
+        req = self._get('/build_info')
+        controller = build_info.BuildInfoController({})
+        mock_engine = mock.Mock()
+        mock_engine.get_revision.return_value = 'engine_revision'
+        controller.engine = mock_engine
+        mock_conf.revision = {'heat_revision': 'test'}
+
+        response = controller.build_info(req, tenant_id=self.tenant)
+        self.assertEqual('test', response['api']['revision'])
+
+    def test_retrieves_build_revision_from_the_engine(self):
+        req = self._get('/build_info')
+        controller = build_info.BuildInfoController({})
+        mock_engine = mock.Mock()
+        mock_engine.get_revision.return_value = 'engine_revision'
+        controller.engine = mock_engine
+
+        response = controller.build_info(req, tenant_id=self.tenant)
+        self.assertIn('engine', response)
+        self.assertIn('revision', response['engine'])
+        self.assertEqual('engine_revision', response['engine']['revision'])

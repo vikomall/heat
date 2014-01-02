@@ -12,7 +12,10 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from webob import exc
+
 from heat.api.openstack.v1 import util
+from heat.common import context
 from heat.common.wsgi import Request
 from heat.tests.common import HeatTestCase
 
@@ -58,7 +61,41 @@ class TestGetAllowedParams(HeatTestCase):
         self.assertIn('foo value', result['foo'])
         self.assertIn('foo value 2', result['foo'])
 
+    def test_handles_mixed_value_param_with_multiple_entries(self):
+        self.whitelist = {'foo': 'mixed'}
+        self.params.add('foo', 'foo value 2')
+
+        result = util.get_allowed_params(self.params, self.whitelist)
+        self.assertEqual(2, len(result['foo']))
+        self.assertIn('foo value', result['foo'])
+        self.assertIn('foo value 2', result['foo'])
+
+    def test_handles_mixed_value_param_with_single_entry(self):
+        self.whitelist = {'foo': 'mixed'}
+
+        result = util.get_allowed_params(self.params, self.whitelist)
+        self.assertEqual('foo value', result['foo'])
+
     def test_ignores_bogus_whitelist_items(self):
         self.whitelist = {'foo': 'blah'}
         result = util.get_allowed_params(self.params, self.whitelist)
         self.assertNotIn('foo', result)
+
+
+class TestTenantLocal(HeatTestCase):
+    def setUp(self):
+        super(TestTenantLocal, self).setUp()
+        self.req = Request({})
+        self.req.context = context.RequestContext(tenant_id='foo',
+                                                  is_admin=False)
+
+    def test_tenant_local(self):
+        @util.tenant_local
+        def an_action(controller, req):
+            return 'woot'
+
+        self.assertEqual('woot',
+                         an_action(None, self.req, tenant_id='foo'))
+
+        self.assertRaises(exc.HTTPForbidden,
+                          an_action, None, self.req, tenant_id='bar')

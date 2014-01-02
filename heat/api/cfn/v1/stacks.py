@@ -52,7 +52,7 @@ class StackController(object):
     def _enforce(self, req, action):
         """Authorize an action against the policy.json."""
         try:
-            self.policy.enforce(req.context, action, {})
+            self.policy.enforce(req.context, action)
         except heat_exception.Forbidden:
             msg = _('Action %s not allowed for user') % action
             raise exception.HeatAccessDeniedError(msg)
@@ -267,9 +267,11 @@ class StackController(object):
     )
 
     def create(self, req):
+        self._enforce(req, 'CreateStack')
         return self.create_or_update(req, self.CREATE_STACK)
 
     def update(self, req):
+        self._enforce(req, 'UpdateStack')
         return self.create_or_update(req, self.UPDATE_STACK)
 
     def create_or_update(self, req, action=None):

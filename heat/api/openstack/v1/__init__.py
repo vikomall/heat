@@ -19,6 +19,7 @@ from heat.api.openstack.v1 import stacks
 from heat.api.openstack.v1 import resources
 from heat.api.openstack.v1 import events
 from heat.api.openstack.v1 import actions
+from heat.api.openstack.v1 import build_info
 from heat.common import wsgi
 
 from heat.openstack.common import log as logging
@@ -36,8 +37,8 @@ class API(wsgi.Router):
         self.conf = conf
         mapper = routes.Mapper()
 
+        # Stacks
         stacks_resource = stacks.create_resource(conf)
-
         with mapper.submapper(controller=stacks_resource,
                               path_prefix="/{tenant_id}") as stack_mapper:
             # Template handling
@@ -110,6 +111,12 @@ class API(wsgi.Router):
                                  action="delete",
                                  conditions={'method': 'DELETE'})
 
+            # Stack abandon
+            stack_mapper.connect("stack_abandon",
+                                 "/stacks/{stack_name}/{stack_id}/abandon",
+                                 action="abandon",
+                                 conditions={'method': 'DELETE'})
+
         # Resources
         resources_resource = resources.create_resource(conf)
         stack_path = "/{tenant_id}/stacks/{stack_name}/{stack_id}"
@@ -163,5 +170,15 @@ class API(wsgi.Router):
                               "/actions",
                               action="action",
                               conditions={'method': 'POST'})
+
+        # Info
+        info_resource = build_info.create_resource(conf)
+        with mapper.submapper(controller=info_resource,
+                              path_prefix="/{tenant_id}") as info_mapper:
+
+            info_mapper.connect('build_info',
+                                '/build_info',
+                                action='build_info',
+                                conditions={'method': 'GET'})
 
         super(API, self).__init__(mapper)

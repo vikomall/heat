@@ -101,6 +101,10 @@ class KeystoneClient(object):
             logger.error(_("Keystone v2 API connection failed, no password "
                          "or auth_token!"))
             raise exception.AuthorizationFailure()
+        kwargs['cacert'] = self._get_client_option('ca_file')
+        kwargs['insecure'] = self._get_client_option('insecure')
+        kwargs['cert'] = self._get_client_option('cert_file')
+        kwargs['key'] = self._get_client_option('key_file')
         client_v2 = kc.Client(**kwargs)
 
         client_v2.authenticate(**auth_kwargs)
@@ -114,6 +118,12 @@ class KeystoneClient(object):
             # All OK so update the context with the token
             self.context.auth_token = client_v2.auth_ref.auth_token
             self.context.auth_url = kwargs.get('auth_url')
+            # Ensure the v2 API we're using is not impacted by keystone
+            # bug #1239303, otherwise we can't trust the user_id
+            if self.context.trustor_user_id != client_v2.auth_ref.user_id:
+                logger.error("Trust impersonation failed, bug #1239303 "
+                             "suspected, you may need a newer keystone")
+                raise exception.AuthorizationFailure()
 
         return client_v2
 
@@ -162,21 +172,33 @@ class KeystoneClient(object):
                          "or auth_token!"))
             raise exception.AuthorizationFailure()
 
+        kwargs['cacert'] = self._get_client_option('ca_file')
+        kwargs['insecure'] = self._get_client_option('insecure')
+        kwargs['cert'] = self._get_client_option('cert_file')
+        kwargs['key'] = self._get_client_option('key_file')
         client = kc_v3.Client(**kwargs)
         # Have to explicitly authenticate() or client.auth_ref is None
         client.authenticate()
 
         return client
 
+    def _get_client_option(self, option):
+        try:
+            cfg.CONF.import_opt(option, 'heat.common.config',
+                                group='clients_keystone')
+            return getattr(cfg.CONF.clients_keystone, option)
+        except (cfg.NoSuchGroupError, cfg.NoSuchOptError):
+            cfg.CONF.import_opt(option, 'heat.common.config', group='clients')
+            return getattr(cfg.CONF.clients, option)
+
     def create_trust_context(self):
         """
-        If cfg.CONF.deferred_auth_method is trusts, we create a
-        trust using the trustor identity in the current context, with the
-        trustee as the heat service user and return a context containing
-        the new trust_id
+        Create a trust using the trustor identity in the current context,
+        with the trustee as the heat service user and return a context
+        containing the new trust_id.
 
-        If deferred_auth_method != trusts, or the current context already
-        contains a trust_id, we do nothing and return the current context
+        If the current context already contains a trust_id, we do nothing
+        and return the current context.
         """
         if self.context.trust_id:
             return self.context

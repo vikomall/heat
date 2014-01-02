@@ -155,6 +155,10 @@ class StackController(object):
         """
         Lists summary information for all stacks
         """
+        filter_whitelist = {
+            'status': 'mixed',
+            'name': 'mixed',
+        }
         whitelist = {
             'limit': 'single',
             'marker': 'single',
@@ -162,9 +166,23 @@ class StackController(object):
             'sort_keys': 'multi',
         }
         params = util.get_allowed_params(req.params, whitelist)
-        stacks = self.engine.list_stacks(req.context, **params)
+        filter_params = util.get_allowed_params(req.params, filter_whitelist)
 
-        return stacks_view.collection(req, stacks)
+        stacks = self.engine.list_stacks(req.context,
+                                         filters=filter_params,
+                                         **params)
+
+        count = None
+        if req.params.get('with_count'):
+            try:
+                # Check if engine has been updated to a version with
+                # support to count_stacks before trying to use it.
+                count = self.engine.count_stacks(req.context,
+                                                 filters=filter_params)
+            except AttributeError as exc:
+                logger.warning("Old Engine Version: %s" % str(exc))
+
+        return stacks_view.collection(req, stacks=stacks, count=count)
 
     @util.tenant_local
     def detail(self, req):
@@ -274,6 +292,15 @@ class StackController(object):
             raise exc.HTTPBadRequest(res['Error'])
 
         raise exc.HTTPNoContent()
+
+    @util.identified_stack
+    def abandon(self, req, identity):
+        """
+        Abandons specified stack by deleting the stack and it's resources
+        from the database, but underlying resources will not be deleted.
+        """
+        return self.engine.abandon_stack(req.context,
+                                         identity)
 
     @util.tenant_local
     def validate_template(self, req, body):

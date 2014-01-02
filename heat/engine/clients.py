@@ -23,8 +23,10 @@ logger = logging.getLogger(__name__)
 
 
 from heat.common import heat_keystoneclient as hkc
+from heatclient import client as heatclient
 from novaclient import client as novaclient
 from novaclient import shell as novashell
+
 try:
     from swiftclient import client as swiftclient
 except ImportError:
@@ -40,6 +42,12 @@ try:
 except ImportError:
     cinderclient = None
     logger.info(_('cinderclient not available'))
+
+try:
+    from troveclient import client as troveclient
+except ImportError:
+    troveclient = None
+    logger.info(_('troveclient not available'))
 
 try:
     from ceilometerclient.v2 import client as ceilometerclient
@@ -68,7 +76,9 @@ class OpenStackClients(object):
         self._swift = None
         self._neutron = None
         self._cinder = None
+        self._trove = None
         self._ceilometer = None
+        self._heat = None
 
     @property
     def auth_token(self):
@@ -104,7 +114,9 @@ class OpenStackClients(object):
             'service_type': service_type,
             'username': None,
             'api_key': None,
-            'extensions': extensions
+            'extensions': extensions,
+            'cacert': self._get_client_option('nova', 'ca_file'),
+            'insecure': self._get_client_option('nova', 'insecure')
         }
 
         client = novaclient.Client(1.1, **args)
@@ -134,7 +146,9 @@ class OpenStackClients(object):
             'key': None,
             'authurl': None,
             'preauthtoken': self.auth_token,
-            'preauthurl': self.url_for(service_type='object-store')
+            'preauthurl': self.url_for(service_type='object-store'),
+            'cacert': self._get_client_option('swift', 'ca_file'),
+            'insecure': self._get_client_option('swift', 'insecure')
         }
         self._swift = swiftclient.Connection(**args)
         return self._swift
@@ -154,7 +168,9 @@ class OpenStackClients(object):
             'auth_url': con.auth_url,
             'service_type': 'network',
             'token': self.auth_token,
-            'endpoint_url': self.url_for(service_type='network')
+            'endpoint_url': self.url_for(service_type='network'),
+            'ca_cert': self._get_client_option('neutron', 'ca_file'),
+            'insecure': self._get_client_option('neutron', 'insecure')
         }
 
         self._neutron = neutronclient.Client(**args)
@@ -177,7 +193,9 @@ class OpenStackClients(object):
             'auth_url': con.auth_url,
             'project_id': con.tenant,
             'username': None,
-            'api_key': None
+            'api_key': None,
+            'cacert': self._get_client_option('cinder', 'ca_file'),
+            'insecure': self._get_client_option('cinder', 'insecure')
         }
 
         self._cinder = cinderclient.Client('1', **args)
@@ -186,6 +204,32 @@ class OpenStackClients(object):
         self._cinder.client.management_url = management_url
 
         return self._cinder
+
+    def trove(self, service_type="database"):
+        if troveclient is None:
+            return None
+        if self._trove:
+            return self._trove
+
+        con = self.context
+        if self.auth_token is None:
+            logger.error(_("Trove connection failed, no auth_token!"))
+            return None
+
+        args = {
+            'service_type': service_type,
+            'auth_url': con.auth_url,
+            'proxy_token': con.auth_token,
+            'username': None,
+            'password': None
+        }
+
+        self._trove = troveclient.Client('1.0', **args)
+        management_url = self.url_for(service_type=service_type)
+        self._trove.client.auth_token = con.auth_token
+        self._trove.client.management_url = management_url
+
+        return self._trove
 
     def ceilometer(self):
         if ceilometerclient is None:
@@ -203,12 +247,47 @@ class OpenStackClients(object):
             'project_id': con.tenant,
             'token': lambda: self.auth_token,
             'endpoint': self.url_for(service_type='metering'),
+            'ca_file': self._get_client_option('ceilometer', 'ca_file'),
+            'cert_file': self._get_client_option('ceilometer', 'cert_file'),
+            'key_file': self._get_client_option('ceilometer', 'key_file'),
+            'insecure': self._get_client_option('ceilometer', 'insecure')
         }
 
         client = ceilometerclient.Client(**args)
 
         self._ceilometer = client
         return self._ceilometer
+
+    def _get_client_option(self, client, option):
+        try:
+            group_name = 'clients_' + client
+            cfg.CONF.import_opt(option, 'heat.common.config',
+                                group=group_name)
+            return getattr(getattr(cfg.CONF, group_name), option)
+        except (cfg.NoSuchGroupError, cfg.NoSuchOptError):
+            cfg.CONF.import_opt(option, 'heat.common.config', group='clients')
+            return getattr(cfg.CONF.clients, option)
+
+    def heat(self):
+        if self._heat:
+            return self._heat
+
+        con = self.context
+        if self.auth_token is None:
+            logger.error(_("Heat connection failed, no auth_token!"))
+            return None
+
+        args = {
+            'auth_url': con.auth_url,
+            'token': self.auth_token,
+            'username': None,
+            'password': None
+        }
+
+        endpoint = self.url_for(service_type='orchestration')
+        self._heat = heatclient.Client('1', endpoint, **args)
+
+        return self._heat
 
 
 class ClientBackend(object):

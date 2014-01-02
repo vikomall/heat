@@ -11,6 +11,7 @@
 #    under the License.
 
 import copy
+import uuid
 
 import mox
 import paramiko
@@ -23,11 +24,10 @@ from heat.common import exception
 from heat.engine import parser
 from heat.engine import resource
 from heat.engine import scheduler
-from heat.openstack.common import uuidutils
 from heat.tests.common import HeatTestCase
 from heat.tests import utils
 
-from ..engine.plugins import rackspace_resource  # noqa
+from heat.engine import clients
 from ..engine.plugins import cloud_server  # noqa
 
 
@@ -91,7 +91,7 @@ class RackspaceCloudServerTest(HeatTestCase):
         template = parser.Template(t)
         stack = parser.Stack(utils.dummy_context(), stack_name, template,
                              {},
-                             stack_id=uuidutils.generate_uuid())
+                             stack_id=str(uuid.uuid4()))
         return (t, stack)
 
     def _mock_ssh_sftp(self, exit_code=0):
@@ -134,9 +134,8 @@ class RackspaceCloudServerTest(HeatTestCase):
         stack_name = '%s_stack' % name
         (t, stack) = self._setup_test_stack(stack_name)
 
-        self.m.StubOutWithMock(rackspace_resource.RackspaceResource, "nova")
-        rackspace_resource.RackspaceResource.nova().MultipleTimes()\
-                                                   .AndReturn(self.fc)
+        self.m.StubOutWithMock(cloud_server.CloudServer, "nova")
+        cloud_server.CloudServer.nova().MultipleTimes().AndReturn(self.fc)
 
         t['Resources']['WebServer']['Properties']['image'] = 'CentOS 5.2'
         t['Resources']['WebServer']['Properties']['flavor'] = '256 MB Server'
@@ -147,8 +146,9 @@ class RackspaceCloudServerTest(HeatTestCase):
         cs.t = cs.stack.resolve_runtime_data(cs.t)
 
         self.m.StubOutWithMock(self.fc.servers, 'create')
-        self.fc.servers.create(utils.PhysName(stack_name, cs.name),
-                               1, 1,
+        name_limit = cloud_server.CloudServer.physical_resource_name_limit
+        server_name = utils.PhysName(stack_name, cs.name, limit=name_limit)
+        self.fc.servers.create(server_name, 1, 1,
                                files=mox.IgnoreArg()).AndReturn(return_server)
         return_server.adminPass = "foobar"
 
@@ -167,9 +167,9 @@ class RackspaceCloudServerTest(HeatTestCase):
 
     def _update_test_cs(self, return_server, name, exit_code=0):
         self._mock_ssh_sftp(exit_code)
-        self.m.StubOutWithMock(rackspace_resource.RackspaceResource, "nova")
-        rackspace_resource.RackspaceResource.nova().MultipleTimes()\
-                                                   .AndReturn(self.fc)
+        self.m.StubOutWithMock(clients.OpenStackClients, "nova")
+        clients.OpenStackClients.nova(
+            mox.IgnoreArg()).MultipleTimes().AndReturn(self.fc)
 
     def test_cs_create(self):
         return_server = self.fc.servers.list()[1]
@@ -207,9 +207,8 @@ class RackspaceCloudServerTest(HeatTestCase):
         self.m.VerifyAll()
 
     def test_cs_create_image_name_err(self):
-        self.m.StubOutWithMock(rackspace_resource.RackspaceResource, "nova")
-        rackspace_resource.RackspaceResource.nova().MultipleTimes()\
-                                                   .AndReturn(self.fc)
+        self.m.StubOutWithMock(cloud_server.CloudServer, "nova")
+        cloud_server.CloudServer.nova().MultipleTimes().AndReturn(self.fc)
         stack_name = 'test_cs_create_image_name_err_stack'
         (t, stack) = self._setup_test_stack(stack_name)
 
@@ -227,9 +226,8 @@ class RackspaceCloudServerTest(HeatTestCase):
         self.m.VerifyAll()
 
     def test_cs_create_image_name_okay(self):
-        self.m.StubOutWithMock(rackspace_resource.RackspaceResource, "nova")
-        rackspace_resource.RackspaceResource.nova().MultipleTimes()\
-                                                   .AndReturn(self.fc)
+        self.m.StubOutWithMock(cloud_server.CloudServer, "nova")
+        cloud_server.CloudServer.nova().MultipleTimes().AndReturn(self.fc)
         stack_name = 'test_cs_create_image_name_err_stack'
         (t, stack) = self._setup_test_stack(stack_name)
 
@@ -253,7 +251,7 @@ class RackspaceCloudServerTest(HeatTestCase):
         self.m.ReplayAll()
         create = scheduler.TaskRunner(cs.create)
         exc = self.assertRaises(exception.ResourceFailure, create)
-        self.assertTrue("The heat-script.sh script exited" in str(exc))
+        self.assertIn("The heat-script.sh script exited", str(exc))
         self.m.VerifyAll()
 
     def test_cs_create_cfnuserdata_nonzero_exit_status(self):
@@ -263,7 +261,7 @@ class RackspaceCloudServerTest(HeatTestCase):
         self.m.ReplayAll()
         create = scheduler.TaskRunner(cs.create)
         exc = self.assertRaises(exception.ResourceFailure, create)
-        self.assertTrue("The cfn-userdata script exited" in str(exc))
+        self.assertIn("The cfn-userdata script exited", str(exc))
         self.m.VerifyAll()
 
     def test_cs_update_cfnuserdata_nonzero_exit_status(self):
@@ -279,13 +277,12 @@ class RackspaceCloudServerTest(HeatTestCase):
         update_template['Metadata'] = {'test': 123}
         update = scheduler.TaskRunner(cs.update, update_template)
         exc = self.assertRaises(exception.ResourceFailure, update)
-        self.assertTrue("The cfn-userdata script exited" in str(exc))
+        self.assertIn("The cfn-userdata script exited", str(exc))
 
     def test_cs_create_flavor_err(self):
         """validate() should throw an if the flavor is invalid."""
-        self.m.StubOutWithMock(rackspace_resource.RackspaceResource, "nova")
-        rackspace_resource.RackspaceResource.nova().MultipleTimes()\
-                                                   .AndReturn(self.fc)
+        self.m.StubOutWithMock(cloud_server.CloudServer, "nova")
+        cloud_server.CloudServer.nova().MultipleTimes().AndReturn(self.fc)
         stack_name = 'test_cs_create_flavor_err_stack'
         (t, stack) = self._setup_test_stack(stack_name)
 
@@ -517,6 +514,8 @@ class RackspaceCloudServerTest(HeatTestCase):
     def test_managed_cloud_complete(self):
         return_server = self.fc.servers.list()[1]
         return_server.metadata = {'rax_service_level_automation': 'Complete'}
+        self.m.StubOutWithMock(return_server, 'get')
+        return_server.get()
         cs = self._setup_test_cs(return_server, 'test_managed_cloud_complete')
         cs.context.roles = ['rax_managed']
         self.m.ReplayAll()
@@ -529,6 +528,8 @@ class RackspaceCloudServerTest(HeatTestCase):
         return_server = self.fc.servers.list()[1]
         return_server.metadata = {'rax_service_level_automation':
                                   'Build Error'}
+        self.m.StubOutWithMock(return_server, 'get')
+        return_server.get()
         cs = self._setup_test_cs(return_server,
                                  'test_managed_cloud_build_error')
         cs.context.roles = ['rax_managed']
@@ -540,6 +541,8 @@ class RackspaceCloudServerTest(HeatTestCase):
     def test_managed_cloud_unknown(self):
         return_server = self.fc.servers.list()[1]
         return_server.metadata = {'rax_service_level_automation': 'FOO'}
+        self.m.StubOutWithMock(return_server, 'get')
+        return_server.get()
         cs = self._setup_test_cs(return_server, 'test_managed_cloud_unknown')
         cs.context.roles = ['rax_managed']
         self.m.ReplayAll()

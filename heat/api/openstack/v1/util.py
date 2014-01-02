@@ -21,12 +21,13 @@ from heat.common import identifier
 
 def tenant_local(handler):
     '''
-    Decorator for a handler method that sets the correct tenant_id in the
+    Decorator for a handler method that checks the path matches the
     request context.
     '''
     @wraps(handler)
     def handle_stack_method(controller, req, tenant_id, **kwargs):
-        req.context.tenant_id = tenant_id
+        if req.context.tenant_id != tenant_id:
+            raise exc.HTTPForbidden()
         return handler(controller, req, **kwargs)
 
     return handle_stack_method
@@ -85,6 +86,10 @@ def get_allowed_params(params, whitelist):
             value = params.get(key)
         elif get_type == 'multi':
             value = params.getall(key)
+        elif get_type == 'mixed':
+            value = params.getall(key)
+            if isinstance(value, list) and len(value) == 1:
+                value = value.pop()
 
         if value:
             allowed_params[key] = value

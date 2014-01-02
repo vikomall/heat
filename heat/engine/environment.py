@@ -197,6 +197,8 @@ class ResourceRegistry(object):
             return
 
         if name in registry and isinstance(registry[name], ResourceInfo):
+            if registry[name] == info:
+                return
             details = {
                 'path': descriptive_path,
                 'was': str(registry[name].value),
@@ -273,6 +275,14 @@ class ResourceRegistry(object):
                 return match
 
     def get_class(self, resource_type, resource_name=None):
+        if resource_type == "":
+            msg = _('Resource "%s" has no type') % resource_name
+            raise exception.StackValidationFailed(message=msg)
+        elif resource_type is None:
+            msg = _('Non-empty resource type is required '
+                    'for resource "%s"') % resource_name
+            raise exception.StackValidationFailed(message=msg)
+
         info = self.get_resource_info(resource_type,
                                       resource_name=resource_name)
         if info is None:

@@ -17,7 +17,7 @@
 """
 Routines for configuring Heat
 """
-
+import copy
 import logging as sys_logging
 import os
 
@@ -106,7 +106,12 @@ engine_opts = [
                default=1000,
                help=_('Maximum events that will be available per stack. Older'
                       ' events will be deleted when this is reached. Set to 0'
-                      ' for unlimited events per stack.'))]
+                      ' for unlimited events per stack.')),
+    cfg.IntOpt('engine_life_check_timeout',
+               default=2,
+               help=_('RPC timeout for the engine liveness check that is used'
+                      ' for stack locking.'))]
+
 rpc_opts = [
     cfg.StrOpt('host',
                default=socket.gethostname(),
@@ -124,18 +129,63 @@ auth_password_opts = [
                 help=_('Allowed keystone endpoints for auth_uri when '
                        'multi_cloud is enabled. At least one endpoint needs '
                        'to be specified.'))]
+clients_opts = [
+    cfg.StrOpt('ca_file',
+               help=_('Optional CA cert file to use in SSL connections')),
+    cfg.StrOpt('cert_file',
+               help=_('Optional PEM-formatted certificate chain file')),
+    cfg.StrOpt('key_file',
+               help=_('Optional PEM-formatted file that contains the '
+                      'private key')),
+    cfg.BoolOpt('insecure',
+                default=False,
+                help=_("If set then the server's certificate will not "
+                       "be verified"))]
+
+
+def register_clients_opts():
+    cfg.CONF.register_opts(clients_opts, group='clients')
+    for client in ('nova', 'swift', 'neutron', 'cinder',
+                   'ceilometer', 'keystone'):
+        client_specific_group = 'clients_' + client
+        # register opts copy and put it to globals in order to
+        # generate_sample.sh to work
+        opts_copy = copy.deepcopy(clients_opts)
+        globals()[client_specific_group + '_opts'] = opts_copy
+        cfg.CONF.register_opts(opts_copy, group=client_specific_group)
+
+
+revision_group = cfg.OptGroup('revision')
+revision_opts = [
+    cfg.StrOpt('heat_revision',
+               default='unknown',
+               help=_('Heat build revision. '
+                      'If you would prefer to manage your build revision '
+                      'separately you can move this section to a different '
+                      'file and add it as another config option'))]
 
 cfg.CONF.register_opts(engine_opts)
 cfg.CONF.register_opts(service_opts)
 cfg.CONF.register_opts(rpc_opts)
+rpc.set_defaults(control_exchange='heat')
 cfg.CONF.register_group(paste_deploy_group)
 cfg.CONF.register_opts(paste_deploy_opts, group=paste_deploy_group)
 cfg.CONF.register_group(auth_password_group)
 cfg.CONF.register_opts(auth_password_opts, group=auth_password_group)
+cfg.CONF.register_group(revision_group)
+cfg.CONF.register_opts(revision_opts, group=revision_group)
+register_clients_opts()
 
-
-def rpc_set_default():
-    rpc.set_defaults(control_exchange='heat')
+# A bit of history:
+# This was added initially by jianingy, then it got added
+# to oslo by Luis. Then it was receintly removed from the
+# default list again.
+# I am not sure we can (or should) rely on oslo to keep
+# our exceptions class in the defaults list.
+allowed_rpc_exception_modules = cfg.CONF.allowed_rpc_exception_modules
+allowed_rpc_exception_modules.append('heat.common.exception')
+cfg.CONF.set_default(name='allowed_rpc_exception_modules',
+                     default=allowed_rpc_exception_modules)
 
 
 def _get_deployment_flavor():
