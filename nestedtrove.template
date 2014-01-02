@@ -1,0 +1,35 @@
+{
+  "AWSTemplateFormatVersion" : "2010-09-09",
+
+  "Description" : "MYSQL server cloud database instance running on Rackspace cloud",
+
+  "Parameters" : {
+
+    "db_instance_name": {
+      "Description" : "DB instance name",
+      "Type": "String",
+      "Default": "Test_DB_Instance"      
+    }
+  },
+
+  "Resources" : {
+    "db": {
+      "Type": "OS::Trove::Instance",
+      "Properties" : {
+        "name" : {"Ref": "db_instance_name"},
+        "flavor" : "1GB Instance",
+        "size" : 30,
+        "users" : [{"name":"testuser", "password":"testpass123", "databases":["testdbonetwo"]}] ,
+        "databases" : [{"name":"testdbonetwo"}]
+      }
+    },
+    "nested_db": {
+      "Type": "AWS::CloudFormation::Stack",
+      "Properties" : {
+        "TemplateURL" : "https://raw.github.com/vikomall/heat/temp_templates/trove.template"
+      }
+    }    
+  }
+
+}
+
