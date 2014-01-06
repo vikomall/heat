@@ -19,12 +19,22 @@ import novaclient.exceptions as novaexception
 
 from heat.common import exception
 from heat.openstack.common import log as logging
+from heat.engine import properties
 from heat.engine import scheduler
 from heat.engine.resources import instance
 from heat.engine.resources import nova_utils
 from heat.db.sqlalchemy import api as db_api
 
-from . import rackspace_resource  # noqa
+try:
+    import pyrax  # noqa
+except ImportError:
+
+    def resource_mapping():
+        return {}
+else:
+
+    def resource_mapping():
+        return {'Rackspace::Cloud::Server': CloudServer}
 
 logger = logging.getLogger(__name__)
 
@@ -32,13 +42,36 @@ logger = logging.getLogger(__name__)
 class CloudServer(instance.Instance):
     """Resource for Rackspace Cloud Servers."""
 
-    properties_schema = {'flavor': {'Type': 'String', 'Required': True,
-                                    'UpdateAllowed': True},
-                         'image': {'Type': 'String', 'Required': True},
-                         'user_data': {'Type': 'String'},
-                         'key_name': {'Type': 'String'},
-                         'Volumes': {'Type': 'List'},
-                         'name': {'Type': 'String'}}
+    PROPERTIES = (
+        FLAVOR, IMAGE, USER_DATA, KEY_NAME, VOLUMES, NAME,
+    ) = (
+        'flavor', 'image', 'user_data', 'key_name', 'Volumes', 'name',
+    )
+
+    properties_schema = {
+        FLAVOR: properties.Schema(
+            properties.Schema.STRING,
+            required=True,
+            update_allowed=True
+        ),
+        IMAGE: properties.Schema(
+            properties.Schema.STRING,
+            required=True
+        ),
+        USER_DATA: properties.Schema(
+            properties.Schema.STRING
+        ),
+        KEY_NAME: properties.Schema(
+            properties.Schema.STRING
+        ),
+        VOLUMES: properties.Schema(
+            properties.Schema.LIST,
+            default=[]
+        ),
+        NAME: properties.Schema(
+            properties.Schema.STRING
+        ),
+    }
 
     attributes_schema = {'PrivateDnsName': ('Private DNS name of the specified'
                                             ' instance.'),
@@ -170,22 +203,6 @@ zypper --non-interactive in cloud-init python-boto python-pip gcc python-devel
         self._private_ip = None
         self._flavor = None
         self._image = None
-        self.rs = rackspace_resource.RackspaceResource(name,
-                                                       json_snippet,
-                                                       stack)
-
-    def physical_resource_name(self):
-        name = self.properties.get('name')
-        if name:
-            return name
-
-        return super(CloudServer, self).physical_resource_name()
-
-    def nova(self):
-        return self.rs.nova()  # Override the Instance method
-
-    def cinder(self):
-        return self.rs.cinder()
 
     @property
     def server(self):
@@ -213,15 +230,15 @@ zypper --non-interactive in cloud-init python-boto python-pip gcc python-devel
     def flavor(self):
         """Get the flavors from the API."""
         if not self._flavor:
-            self._flavor = nova_utils.get_flavor_id(self.nova(),
-                                                    self.properties['flavor'])
+            flavor = self.properties[self.FLAVOR]
+            self._flavor = nova_utils.get_flavor_id(self.nova(), flavor)
         return self._flavor
 
     @property
     def image(self):
         if not self._image:
             self._image = nova_utils.get_image_id(self.nova(),
-                                                  self.properties['image'])
+                                                  self.properties[self.IMAGE])
         return self._image
 
     @property
@@ -251,7 +268,7 @@ zypper --non-interactive in cloud-init python-boto python-pip gcc python-devel
                     return ip['addr']
 
         raise exception.Error("Could not determine the %s IP of %s." %
-                              (ip_type, self.properties['image']))
+                              (ip_type, self.properties[self.IMAGE]))
 
     @property
     def public_ip(self):
@@ -269,7 +286,7 @@ zypper --non-interactive in cloud-init python-boto python-pip gcc python-devel
 
     @property
     def has_userdata(self):
-        if self.properties['user_data'] or self.metadata != {}:
+        if self.properties[self.USER_DATA] or self.metadata != {}:
             return True
         else:
             return False
@@ -283,7 +300,7 @@ zypper --non-interactive in cloud-init python-boto python-pip gcc python-devel
         # metadata are empty
         if not self.script and self.has_userdata:
             return {'Error': "user_data/metadata are not supported for image"
-                    " %s." % self.properties['image']}
+                    " %s." % self.properties[self.IMAGE]}
 
     def _run_ssh_command(self, command):
         """Run a shell command on the Cloud Server via SSH."""
@@ -320,7 +337,6 @@ zypper --non-interactive in cloud-init python-boto python-pip gcc python-devel
         running, so we have to transfer the user-data file to the
         server and then trigger cloud-init.
         """
-
         # Generate SSH public/private keypair
         if self._private_key is not None:
             rsa = RSA.importKey(self._private_key)
@@ -328,8 +344,8 @@ zypper --non-interactive in cloud-init python-boto python-pip gcc python-devel
             rsa = RSA.generate(1024)
         self.private_key = rsa.exportKey()
         public_keys = [rsa.publickey().exportKey('OpenSSH')]
-        if self.properties.get('key_name'):
-            key_name = self.properties['key_name']
+        if self.properties.get(self.KEY_NAME):
+            key_name = self.properties[self.KEY_NAME]
             public_keys.append(nova_utils.get_keypair(self.nova(),
                                                       key_name).public_key)
         personality_files = {
@@ -423,9 +439,31 @@ zypper --non-interactive in cloud-init python-boto python-pip gcc python-devel
                 raise exception.Error("Unknown RackConnect automation status: "
                                       + rc_status)
 
+        if 'rax_managed' in self.context.roles:  # Managed Cloud account
+            if 'rax_service_level_automation' not in server.metadata:
+                logger.debug("Managed Cloud server does not have the "
+                             "rax_service_level_automation metadata tag yet")
+                return False
+
+            mc_status = server.metadata['rax_service_level_automation']
+            logger.debug("Managed Cloud automation status: " + mc_status)
+
+            if mc_status == 'In Progress':
+                return False
+
+            elif mc_status == 'Complete':
+                pass
+
+            elif mc_status == 'Build Error':
+                raise exception.Error("Managed Cloud automation failed")
+
+            else:
+                raise exception.Error("Unknown Managed Cloud automation "
+                                      "status: " + mc_status)
+
         if self.has_userdata:
             # Create heat-script and userdata files on server
-            raw_userdata = self.properties['user_data'] or ''
+            raw_userdata = self.properties[self.USER_DATA] or ''
             userdata = nova_utils.build_userdata(self, raw_userdata)
 
             files = [{'path': "/tmp/userdata", 'data': userdata},
@@ -486,8 +524,8 @@ zypper --non-interactive in cloud-init python-boto python-pip gcc python-devel
                                       {'path': "cfn-userdata",
                                        'log': "/root/cfn-userdata.log"})
 
-        if 'flavor' in prop_diff:
-            flav = json_snippet['Properties']['flavor']
+        if self.FLAVOR in prop_diff:
+            flav = json_snippet['Properties'][self.FLAVOR]
             new_flavor = nova_utils.get_flavor_id(self.nova(), flav)
             self.server.resize(new_flavor)
             resize = scheduler.TaskRunner(nova_utils.check_resize,
@@ -509,12 +547,3 @@ zypper --non-interactive in cloud-init python-boto python-pip gcc python-devel
         logger.info('%s._resolve_attribute(%s) == %s'
                     % (self.name, key, function))
         return unicode(function)
-
-
-# pyrax module is required to work with Rackspace cloud server provider.
-# If it is not installed, don't register cloud server provider
-def resource_mapping():
-    if rackspace_resource.PYRAX_INSTALLED:
-        return {'Rackspace::Cloud::Server': CloudServer}
-    else:
-        return {}

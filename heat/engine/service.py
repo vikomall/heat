@@ -39,6 +39,7 @@ from heat.engine import parser
 from heat.engine import properties
 from heat.engine import resource
 from heat.engine import resources
+from heat.engine import stack_lock
 from heat.engine import template as tpl
 from heat.engine import watchrule
 
@@ -46,6 +47,8 @@ from heat.openstack.common import log as logging
 from heat.openstack.common import threadgroup
 from heat.openstack.common.gettextutils import _
 from heat.openstack.common.rpc import service
+from heat.openstack.common.rpc import common as rpc_common
+from heat.openstack.common import excutils
 from heat.openstack.common import uuidutils
 
 
@@ -61,6 +64,19 @@ def request_context(func):
     return wrapped
 
 
+class EngineListener(service.Service):
+    '''
+    Listen on an AMQP queue while a stack action is in-progress and
+    respond to stack-related questions.  Used for multi-engine support.
+    '''
+    def listening(self, ctxt):
+        '''
+        Respond affirmatively to confirm that the engine performing the
+        action is still alive.
+        '''
+        return True
+
+
 class EngineService(service.Service):
     """
     Manages the running instances from creation to destruction.
@@ -71,16 +87,52 @@ class EngineService(service.Service):
     are also dynamically added and will be named as keyword arguments
     by the RPC caller.
     """
+
+    RPC_API_VERSION = '1.1'
+
     def __init__(self, host, topic, manager=None):
         super(EngineService, self).__init__(host, topic)
         # stg == "Stack Thread Groups"
         self.stg = {}
         resources.initialise()
 
+        self.listener = EngineListener(host, stack_lock.engine_id)
+        logger.debug(_("Starting listener for engine %s")
+                     % stack_lock.engine_id)
+        self.listener.start()
+
     def _start_in_thread(self, stack_id, func, *args, **kwargs):
         if stack_id not in self.stg:
             self.stg[stack_id] = threadgroup.ThreadGroup()
-        self.stg[stack_id].add_thread(func, *args, **kwargs)
+        return self.stg[stack_id].add_thread(func, *args, **kwargs)
+
+    def _start_thread_with_lock(self, cnxt, stack, func, *args):
+        """
+        Try to acquire a stack lock and, if successful, run the method in a
+        sub-thread.
+
+        :param cnxt: RPC context
+        :param stack: Stack to be operated on
+        :type stack: heat.engine.parser.Stack
+        :param func: Callable to be invoked in sub-thread
+        :type func: function or instancemethod
+        :param args: Args to be passed to func
+        """
+        lock = stack_lock.StackLock(cnxt, stack)
+
+        def release(gt, *args, **kwargs):
+            """
+            Callback function that will be passed to GreenThread.link().
+            """
+            lock.release()
+
+        lock.acquire()
+        try:
+            th = self._start_in_thread(stack.id, func, *args)
+            th.link(release)
+        except:
+            with excutils.save_and_reraise_exception():
+                lock.release()
 
     def _timer_in_thread(self, stack_id, func, *args, **kwargs):
         """
@@ -142,13 +194,15 @@ class EngineService(service.Service):
         for s in stacks:
             self._start_watch_task(s.id, admin_context)
 
+    @rpc_common.client_exceptions(exception.StackNotFound)
     @request_context
     def identify_stack(self, cnxt, stack_name):
         """
         The identify_stack method returns the full stack identifier for a
         single, live stack given the stack name.
-        arg1 -> RPC context.
-        arg2 -> Name or UUID of the stack to look up.
+
+        :param cnxt: RPC context.
+        :param stack_name: Name or UUID of the stack to look up.
         """
         if uuidutils.is_uuid_like(stack_name):
             s = db_api.stack_get(cnxt, stack_name, show_deleted=True)
@@ -182,8 +236,10 @@ class EngineService(service.Service):
     def show_stack(self, cnxt, stack_identity):
         """
         Return detailed information about one or all stacks.
-        arg1 -> RPC cnxt.
-        arg2 -> Name of the stack you want to show, or None to show all
+
+        :param cnxt: RPC context.
+        :param stack_identity: Name of the stack you want to show, or None
+            to show all
         """
         if stack_identity is not None:
             stacks = [self._get_stack(cnxt, stack_identity, show_deleted=True)]
@@ -196,11 +252,24 @@ class EngineService(service.Service):
 
         return [format_stack_detail(s) for s in stacks]
 
+    def get_revision(self, cnxt):
+        return cfg.CONF.revision['heat_revision']
+
     @request_context
-    def list_stacks(self, cnxt):
+    def list_stacks(self, cnxt, limit=None, marker=None, sort_keys=None,
+                    sort_dir=None, filters=None):
         """
-        The list_stacks method returns attributes of all stacks.
-        arg1 -> RPC cnxt.
+        The list_stacks method returns attributes of all stacks.  It supports
+        pagination (``limit`` and ``marker``), sorting (``sort_keys`` and
+        ``sort_dir``) and filtering (``filters``) of the results.
+
+        :param cnxt: RPC context
+        :param limit: the number of stacks to list (integer or string)
+        :param marker: the ID of the last item in the previous page
+        :param sort_keys: an array of fields used to sort the list
+        :param sort_dir: the direction of the sort ('asc' or 'desc')
+        :param filters: a dict with attribute:value to filter the list
+        :returns: a list of formatted stacks
         """
 
         def format_stack_details(stacks):
@@ -215,8 +284,19 @@ class EngineService(service.Service):
                 else:
                     yield api.format_stack(stack)
 
-        stacks = db_api.stack_get_all_by_tenant(cnxt) or []
+        stacks = db_api.stack_get_all_by_tenant(cnxt, limit, sort_keys, marker,
+                                                sort_dir, filters) or []
         return list(format_stack_details(stacks))
+
+    @request_context
+    def count_stacks(self, cnxt, filters=None):
+        """
+        Return the number of stacks that match the given filters
+        :param ctxt: RPC context.
+        :param filters: a dict of ATTR:VALUE to match agains stacks
+        :returns: a integer representing the number of matched stacks
+        """
+        return db_api.stack_count_all_by_tenant(cnxt, filters=filters)
 
     def _validate_deferred_auth_context(self, cnxt, stack):
         if cfg.CONF.deferred_auth_method != 'password':
@@ -237,6 +317,7 @@ class EngineService(service.Service):
         provided.
         Note that at this stage the template has already been fetched from the
         heat-api process if using a template-url.
+
         :param cnxt: RPC context.
         :param stack_name: Name of the stack you want to create.
         :param template: Template of stack you want to create.
@@ -244,7 +325,7 @@ class EngineService(service.Service):
         :param files: Files referenced from the template
         :param args: Request parameters/args passed from API
         """
-        logger.info('template is %s' % template)
+        logger.info(_('template is %s') % template)
 
         def _stack_create(stack):
             # Create the stack, and create the periodic task if successful
@@ -253,7 +334,8 @@ class EngineService(service.Service):
                 # Schedule a periodic watcher task for this stack
                 self._start_watch_task(stack.id, cnxt)
             else:
-                logger.warning("Stack create failed, status %s" % stack.status)
+                logger.warning(_("Stack create failed, status %s") %
+                               stack.status)
 
         if db_api.stack_get_by_name(cnxt, stack_name):
             raise exception.StackExists(stack_name=stack_name)
@@ -279,9 +361,9 @@ class EngineService(service.Service):
 
         stack.validate()
 
-        stack_id = stack.store()
+        stack.store()
 
-        self._start_in_thread(stack_id, _stack_create, stack)
+        self._start_thread_with_lock(cnxt, stack, _stack_create, stack)
 
         return dict(stack.identifier())
 
@@ -293,13 +375,15 @@ class EngineService(service.Service):
         provided template and parameters.
         Note that at this stage the template has already been fetched from the
         heat-api process if using a template-url.
-        arg1 -> RPC context.
-        arg2 -> Name of the stack you want to create.
-        arg3 -> Template of stack you want to create.
-        arg4 -> Stack Input Params
-        arg4 -> Request parameters/args passed from API
+
+        :param cnxt: RPC context.
+        :param stack_identity: Name of the stack you want to create.
+        :param template: Template of stack you want to create.
+        :param params: Stack Input Params
+        :param files: Files referenced from the template
+        :param args: Request parameters/args passed from API
         """
-        logger.info('template is %s' % template)
+        logger.info(_('template is %s') % template)
 
         # Get the database representation of the existing stack
         db_stack = self._get_stack(cnxt, stack_identity)
@@ -329,7 +413,8 @@ class EngineService(service.Service):
         self._validate_deferred_auth_context(cnxt, updated_stack)
         updated_stack.validate()
 
-        self._start_in_thread(db_stack.id, current_stack.update, updated_stack)
+        self._start_thread_with_lock(cnxt, current_stack, current_stack.update,
+                                     updated_stack)
 
         return dict(current_stack.identifier())
 
@@ -339,11 +424,10 @@ class EngineService(service.Service):
         The validate_template method uses the stack parser to check
         the validity of a template.
 
-        arg1 -> RPC context.
-        arg3 -> Template of stack you want to create.
-        arg4 -> Stack Input Params
+        :param cnxt: RPC context.
+        :param template: Template of stack you want to create.
         """
-        logger.info('validate_template')
+        logger.info(_('validate_template'))
         if template is None:
             msg = _("No Template provided.")
             return webob.exc.HTTPBadRequest(explanation=msg)
@@ -406,8 +490,9 @@ class EngineService(service.Service):
     def get_template(self, cnxt, stack_identity):
         """
         Get the template.
-        arg1 -> RPC context.
-        arg2 -> Name of the stack you want to see.
+
+        :param cnxt: RPC context.
+        :param stack_identity: Name of the stack you want to see.
         """
         s = self._get_stack(cnxt, stack_identity, show_deleted=True)
         if s:
@@ -418,35 +503,51 @@ class EngineService(service.Service):
     def delete_stack(self, cnxt, stack_identity):
         """
         The delete_stack method deletes a given stack.
-        arg1 -> RPC context.
-        arg2 -> Name of the stack you want to delete.
+
+        :param cnxt: RPC context.
+        :param stack_identity: Name of the stack you want to delete.
         """
         st = self._get_stack(cnxt, stack_identity)
 
-        logger.info('deleting stack %s' % st.name)
+        logger.info(_('deleting stack %s') % st.name)
 
         stack = parser.Stack.load(cnxt, stack=st)
 
-        # Kill any pending threads by calling ThreadGroup.stop()
-        if st.id in self.stg:
-            self.stg[st.id].stop()
-            del self.stg[st.id]
-        # use the service ThreadGroup for deletes
-        self.tg.add_thread(stack.delete)
+        self._start_thread_with_lock(cnxt, stack, stack.delete)
         return None
 
-    def list_resource_types(self, cnxt):
+    @request_context
+    def abandon_stack(self, cnxt, stack_identity):
+        """
+        The abandon_stack method abandons a given stack.
+        :param cnxt: RPC context.
+        :param stack_identity: Name of the stack you want to abandon.
+        """
+        st = self._get_stack(cnxt, stack_identity)
+        logger.info(_('abandoning stack %s') % st.name)
+        stack = parser.Stack.load(cnxt, stack=st)
+
+        # Get stack details before deleting it.
+        stack_info = stack.get_abandon_data()
+        # Set deletion policy to 'Retain' for all resources in the stack.
+        stack.set_deletion_policy(resource.RETAIN)
+        self._start_thread_with_lock(cnxt, stack, stack.delete)
+        return stack_info
+
+    def list_resource_types(self, cnxt, support_status=None):
         """
         Get a list of supported resource types.
-        arg1 -> RPC context.
+
+        :param cnxt: RPC context.
         """
-        return list(resource.get_types())
+        return resource.get_types(support_status)
 
     def resource_schema(self, cnxt, type_name):
         """
         Return the schema of the specified type.
-        arg1 -> RPC context.
-        arg2 -> Name of the resource type to obtain the schema of.
+
+        :param cnxt: RPC context.
+        :param type_name: Name of the resource type to obtain the schema of.
         """
         try:
             resource_class = resource.get_class(type_name)
@@ -473,8 +574,9 @@ class EngineService(service.Service):
     def generate_template(self, cnxt, type_name):
         """
         Generate a template based on the specified type.
-        arg1 -> RPC context.
-        arg2 -> Name of the resource type to generate a template for.
+
+        :param cnxt: RPC context.
+        :param type_name: Name of the resource type to generate a template for.
         """
         try:
             return \
@@ -486,8 +588,9 @@ class EngineService(service.Service):
     def list_events(self, cnxt, stack_identity):
         """
         The list_events method lists all events associated with a given stack.
-        arg1 -> RPC context.
-        arg2 -> Name of the stack you want to get events for.
+
+        :param cnxt: RPC context.
+        :param stack_identity: Name of the stack you want to get events for.
         """
 
         if stack_identity is not None:
@@ -528,7 +631,7 @@ class EngineService(service.Service):
             try:
                 akey_rsrc = self.find_physical_resource(cnxt, access_key)
             except exception.PhysicalResourceNotFound:
-                logger.warning("access_key % not found!" % access_key)
+                logger.warning(_("access_key % not found!") % access_key)
                 return False
 
             akey_rsrc_id = identifier.ResourceIdentifier(**akey_rsrc)
@@ -538,9 +641,9 @@ class EngineService(service.Service):
                 ak_akey_rsrc = stack[akey_rsrc_id.resource_name]
                 return ak_akey_rsrc.access_allowed(resource_name)
             else:
-                logger.warning("Cannot access resource from wrong stack!")
+                logger.warning(_("Cannot access resource from wrong stack!"))
         else:
-            logger.warning("Cannot access resource, invalid credentials!")
+            logger.warning(_("Cannot access resource, invalid credentials!"))
 
         return False
 
@@ -551,7 +654,8 @@ class EngineService(service.Service):
 
         if cfg.CONF.heat_stack_user_role in cnxt.roles:
             if not self._authorize_stack_user(cnxt, stack, resource_name):
-                logger.warning("Access denied to resource %s" % resource_name)
+                logger.warning(_("Access denied to resource %s")
+                               % resource_name)
                 raise exception.Forbidden()
 
         if resource_name not in stack:
@@ -591,8 +695,9 @@ class EngineService(service.Service):
         """
         Return an identifier for the resource with the specified physical
         resource ID.
-        arg1 -> RPC context.
-        arg2 -> The physical resource ID to look up.
+
+        :param cnxt: RPC context.
+        :param physical_resource_id: The physical resource ID to look up.
         """
         rs = db_api.resource_get_by_physical_resource_id(cnxt,
                                                          physical_resource_id)
@@ -630,13 +735,13 @@ class EngineService(service.Service):
         Handle request to perform suspend action on a stack
         '''
         def _stack_suspend(stack):
-            logger.debug("suspending stack %s" % stack.name)
+            logger.debug(_("suspending stack %s") % stack.name)
             stack.suspend()
 
         s = self._get_stack(cnxt, stack_identity)
 
         stack = parser.Stack.load(cnxt, stack=s)
-        self._start_in_thread(stack.id, _stack_suspend, stack)
+        self._start_thread_with_lock(cnxt, stack, _stack_suspend, stack)
 
     @request_context
     def stack_resume(self, cnxt, stack_identity):
@@ -644,13 +749,13 @@ class EngineService(service.Service):
         Handle request to perform a resume action on a stack
         '''
         def _stack_resume(stack):
-            logger.debug("resuming stack %s" % stack.name)
+            logger.debug(_("resuming stack %s") % stack.name)
             stack.resume()
 
         s = self._get_stack(cnxt, stack_identity)
 
         stack = parser.Stack.load(cnxt, stack=s)
-        self._start_in_thread(stack.id, _stack_resume, stack)
+        self._start_thread_with_lock(cnxt, stack, _stack_resume, stack)
 
     def _load_user_creds(self, creds_id):
         user_creds = db_api.user_creds_get(creds_id)
@@ -698,11 +803,11 @@ class EngineService(service.Service):
         # Retrieve the stored credentials & create context
         # Require tenant_safe=False to the stack_get to defeat tenant
         # scoping otherwise we fail to retrieve the stack
-        logger.debug("Periodic watcher task for stack %s" % sid)
+        logger.debug(_("Periodic watcher task for stack %s") % sid)
         admin_context = context.get_admin_context()
         stack = db_api.stack_get(admin_context, sid, tenant_safe=False)
         if not stack:
-            logger.error("Unable to retrieve stack %s for periodic task" %
+            logger.error(_("Unable to retrieve stack %s for periodic task") %
                          sid)
             return
         stack_context = self._load_user_creds(stack.user_creds_id)
@@ -716,8 +821,8 @@ class EngineService(service.Service):
         try:
             wrs = db_api.watch_rule_get_all_by_stack(stack_context, sid)
         except Exception as ex:
-            logger.warn('periodic_task db error (%s) %s' %
-                        ('watch rule removed?', str(ex)))
+            logger.warn(_('periodic_task db error (%(msg)s) %(ex)s') % {
+                        'msg': 'watch rule removed?', 'ex': str(ex)})
             return
 
         def run_alarm_action(actions, details):
@@ -771,18 +876,20 @@ class EngineService(service.Service):
 
     @request_context
     def show_watch(self, cnxt, watch_name):
-        '''
+        """
         The show_watch method returns the attributes of one watch/alarm
-        arg1 -> RPC context.
-        arg2 -> Name of the watch you want to see, or None to see all
-        '''
+
+        :param cnxt: RPC context.
+        :param watch_name: Name of the watch you want to see, or None to see
+            all
+        """
         if watch_name:
             wrn = [watch_name]
         else:
             try:
                 wrn = [w.name for w in db_api.watch_rule_get_all(cnxt)]
             except Exception as ex:
-                logger.warn('show_watch (all) db error %s' % str(ex))
+                logger.warn(_('show_watch (all) db error %s') % str(ex))
                 return
 
         wrs = [watchrule.WatchRule.load(cnxt, w) for w in wrn]
@@ -791,24 +898,27 @@ class EngineService(service.Service):
 
     @request_context
     def show_watch_metric(self, cnxt, metric_namespace=None, metric_name=None):
-        '''
+        """
         The show_watch method returns the datapoints for a metric
-        arg1 -> RPC context.
-        arg2 -> Name of the namespace you want to see, or None to see all
-        arg3 -> Name of the metric you want to see, or None to see all
-        '''
+
+        :param cnxt: RPC context.
+        :param metric_namespace: Name of the namespace you want to see, or None
+            to see all
+        :param metric_name: Name of the metric you want to see, or None to see
+            all
+        """
 
         # DB API and schema does not yet allow us to easily query by
         # namespace/metric, but we will want this at some point
         # for now, the API can query all metric data and filter locally
         if metric_namespace is not None or metric_name is not None:
-            logger.error("Filtering by namespace/metric not yet supported")
+            logger.error(_("Filtering by namespace/metric not yet supported"))
             return
 
         try:
             wds = db_api.watch_data_get_all(cnxt)
         except Exception as ex:
-            logger.warn('show_metric (all) db error %s' % str(ex))
+            logger.warn(_('show_metric (all) db error %s') % str(ex))
             return
 
         result = [api.format_watch_data(w) for w in wds]
@@ -816,12 +926,13 @@ class EngineService(service.Service):
 
     @request_context
     def set_watch_state(self, cnxt, watch_name, state):
-        '''
+        """
         Temporarily set the state of a given watch
-        arg1 -> RPC context.
-        arg2 -> Name of the watch
-        arg3 -> State (must be one defined in WatchRule class
-        '''
+
+        :param cnxt: RPC context.
+        :param watch_name: Name of the watch
+        :param state: State (must be one defined in WatchRule class
+        """
         wr = watchrule.WatchRule.load(cnxt, watch_name)
         if wr.state == rpc_api.WATCH_STATE_CEILOMETER_CONTROLLED:
             return

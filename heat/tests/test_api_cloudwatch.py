@@ -57,7 +57,7 @@ class WatchControllerTest(HeatTestCase):
         dummy_req = self._dummy_GET_request(params)
         self.controller.policy.policy_path = None
         response = self.controller._enforce(dummy_req, 'ListMetrics')
-        self.assertEqual(response, None)
+        self.assertIsNone(response)
         self.m.VerifyAll()
 
     def test_enforce_denied(self):
@@ -77,7 +77,7 @@ class WatchControllerTest(HeatTestCase):
         dummy_req.context.roles = ['heat_stack_user']
 
         self.m.StubOutWithMock(policy.Enforcer, 'enforce')
-        policy.Enforcer.enforce(dummy_req.context, 'ListMetrics', {}
+        policy.Enforcer.enforce(dummy_req.context, 'ListMetrics'
                                 ).AndRaise(AttributeError)
         self.m.ReplayAll()
 

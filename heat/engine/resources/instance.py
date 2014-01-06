@@ -15,8 +15,11 @@
 
 from heat.engine import signal_responder
 from heat.engine import clients
+from heat.engine import constraints
+from heat.engine import properties
 from heat.engine import resource
 from heat.engine import scheduler
+from heat.engine.resources.neutron import neutron
 from heat.engine.resources import nova_utils
 from heat.engine.resources import volume
 
@@ -30,11 +33,20 @@ logger = logging.getLogger(__name__)
 
 
 class Restarter(signal_responder.SignalResponder):
+    PROPERTIES = (
+        INSTANCE_ID,
+    ) = (
+        'InstanceId',
+    )
+
     properties_schema = {
-        'InstanceId': {
-            'Type': 'String',
-            'Required': True,
-            'Description': _('Instance ID to be restarted.')}}
+        INSTANCE_ID: properties.Schema(
+            properties.Schema.STRING,
+            _('Instance ID to be restarted.'),
+            required=True
+        ),
+    }
+
     attributes_schema = {
         "AlarmUrl": _("A signed url to handle the alarm "
                       "(Heat extension).")
@@ -56,19 +68,21 @@ class Restarter(signal_responder.SignalResponder):
         else:
             alarm_state = details.get('state', 'alarm').lower()
 
-        logger.info('%s Alarm, new state %s' % (self.name, alarm_state))
+        logger.info(_('%(name)s Alarm, new state %(state)s') % {
+                    'name': self.name, 'state': alarm_state})
 
         if alarm_state != 'alarm':
             return
 
-        victim = self._find_resource(self.properties['InstanceId'])
+        victim = self._find_resource(self.properties[self.INSTANCE_ID])
         if victim is None:
-            logger.info('%s Alarm, can not find instance %s' %
-                       (self.name, self.properties['InstanceId']))
+            logger.info(_('%(name)s Alarm, can not find instance '
+                        '%(instance)s') % {'name': self.name,
+                        'instance': self.properties[self.INSTANCE_ID]})
             return
 
-        logger.info('%s Alarm, restarting resource: %s' %
-                    (self.name, victim.name))
+        logger.info(_('%(name)s Alarm, restarting resource: %(victim)s') % {
+                    'name': self.name, 'victim': victim.name})
         self.stack.restart_resource(victim.name)
 
     def _resolve_attribute(self, name):
@@ -81,90 +95,186 @@ class Restarter(signal_responder.SignalResponder):
 
 
 class Instance(resource.Resource):
-    # AWS does not require InstanceType but Heat does because the nova
-    # create api call requires a flavor
-    tags_schema = {'Key': {'Type': 'String',
-                           'Required': True},
-                   'Value': {'Type': 'String',
-                             'Required': True}}
+
+    PROPERTIES = (
+        IMAGE_ID, INSTANCE_TYPE, KEY_NAME, AVAILABILITY_ZONE,
+        DISABLE_API_TERMINATION, KERNEL_ID, MONITORING,
+        PLACEMENT_GROUP_NAME, PRIVATE_IP_ADDRESS, RAM_DISK_ID,
+        SECURITY_GROUPS, SECURITY_GROUP_IDS, NETWORK_INTERFACES,
+        SOURCE_DEST_CHECK, SUBNET_ID, TAGS, NOVA_SCHEDULER_HINTS, TENANCY,
+        USER_DATA, VOLUMES,
+    ) = (
+        'ImageId', 'InstanceType', 'KeyName', 'AvailabilityZone',
+        'DisableApiTermination', 'KernelId', 'Monitoring',
+        'PlacementGroupName', 'PrivateIpAddress', 'RamDiskId',
+        'SecurityGroups', 'SecurityGroupIds', 'NetworkInterfaces',
+        'SourceDestCheck', 'SubnetId', 'Tags', 'NovaSchedulerHints', 'Tenancy',
+        'UserData', 'Volumes',
+    )
+
+    _TAG_KEYS = (
+        TAG_KEY, TAG_VALUE,
+    ) = (
+        'Key', 'Value',
+    )
+
+    _NOVA_SCHEDULER_HINT_KEYS = (
+        NOVA_SCHEDULER_HINT_KEY, NOVA_SCHEDULER_HINT_VALUE,
+    ) = (
+        'Key', 'Value',
+    )
+
+    _VOLUME_KEYS = (
+        VOLUME_DEVICE, VOLUME_ID,
+    ) = (
+        'Device', 'VolumeId',
+    )
 
     properties_schema = {
-        'ImageId': {
-            'Type': 'String',
-            'Required': True,
-            'Description': _('Glance image ID or name.')},
-        'InstanceType': {
-            'Type': 'String',
-            'Required': True,
-            'UpdateAllowed': True,
-            'Description': _('Nova instance type (flavor).')},
-        'KeyName': {
-            'Type': 'String',
-            'Description': _('Optional Nova keypair name.')},
-        'AvailabilityZone': {
-            'Type': 'String',
-            'Description': _('Availability zone to launch the instance in.')},
-        'DisableApiTermination': {
-            'Type': 'String',
-            'Implemented': False,
-            'Description': _('Not Implemented.')},
-        'KernelId': {
-            'Type': 'String',
-            'Implemented': False,
-            'Description': _('Not Implemented.')},
-        'Monitoring': {
-            'Type': 'Boolean',
-            'Implemented': False,
-            'Description': _('Not Implemented.')},
-        'PlacementGroupName': {
-            'Type': 'String',
-            'Implemented': False,
-            'Description': _('Not Implemented.')},
-        'PrivateIpAddress': {
-            'Type': 'String',
-            'Implemented': False,
-            'Description': _('Not Implemented.')},
-        'RamDiskId': {
-            'Type': 'String',
-            'Implemented': False,
-            'Description': _('Not Implemented.')},
-        'SecurityGroups': {
-            'Type': 'List',
-            'Description': _('Security group names to assign.')},
-        'SecurityGroupIds': {
-            'Type': 'List',
-            'Description': _('Security group IDs to assign.')},
-        'NetworkInterfaces': {
-            'Type': 'List',
-            'Description': _('Network interfaces to associate with '
-                             'instance.')},
-        'SourceDestCheck': {
-            'Type': 'Boolean',
-            'Implemented': False,
-            'Description': _('Not Implemented.')},
-        'SubnetId': {
-            'Type': 'String',
-            'Description': _('Subnet ID to launch instance in.')},
-        'Tags': {
-            'Type': 'List',
-            'Schema': {'Type': 'Map', 'Schema': tags_schema},
-            'Description': _('Tags to attach to instance.')},
-        'NovaSchedulerHints': {
-            'Type': 'List',
-            'Schema': {'Type': 'Map', 'Schema': tags_schema},
-            'Description': _('Scheduler hints to pass '
-                             'to Nova (Heat extension).')},
-        'Tenancy': {
-            'Type': 'String',
-            'AllowedValues': ['dedicated', 'default'],
-            'Implemented': False,
-            'Description': _('Not Implemented.')},
-        'UserData': {
-            'Type': 'String',
-            'Description': _('User data to pass to instance.')},
-        'Volumes': {
-            'Type': 'List',
-            'Description': _('Volumes to attach to instance.')}}
+        IMAGE_ID: properties.Schema(
+            properties.Schema.STRING,
+            _('Glance image ID or name.'),
+            required=True
+        ),
+        # AWS does not require InstanceType but Heat does because the nova
+        # create api call requires a flavor
+        INSTANCE_TYPE: properties.Schema(
+            properties.Schema.STRING,
+            _('Nova instance type (flavor).'),
+            required=True,
+            update_allowed=True
+        ),
+        KEY_NAME: properties.Schema(
+            properties.Schema.STRING,
+            _('Optional Nova keypair name.')
+        ),
+        AVAILABILITY_ZONE: properties.Schema(
+            properties.Schema.STRING,
+            _('Availability zone to launch the instance in.')
+        ),
+        DISABLE_API_TERMINATION: properties.Schema(
+            properties.Schema.STRING,
+            _('Not Implemented.'),
+            implemented=False
+        ),
+        KERNEL_ID: properties.Schema(
+            properties.Schema.STRING,
+            _('Not Implemented.'),
+            implemented=False
+        ),
+        MONITORING: properties.Schema(
+            properties.Schema.BOOLEAN,
+            _('Not Implemented.'),
+            implemented=False
+        ),
+        PLACEMENT_GROUP_NAME: properties.Schema(
+            properties.Schema.STRING,
+            _('Not Implemented.'),
+            implemented=False
+        ),
+        PRIVATE_IP_ADDRESS: properties.Schema(
+            properties.Schema.STRING,
+            _('Not Implemented.'),
+            implemented=False
+        ),
+        RAM_DISK_ID: properties.Schema(
+            properties.Schema.STRING,
+            _('Not Implemented.'),
+            implemented=False
+        ),
+        SECURITY_GROUPS: properties.Schema(
+            properties.Schema.LIST,
+            _('Security group names to assign.')
+        ),
+        SECURITY_GROUP_IDS: properties.Schema(
+            properties.Schema.LIST,
+            _('Security group IDs to assign.')
+        ),
+        NETWORK_INTERFACES: properties.Schema(
+            properties.Schema.LIST,
+            _('Network interfaces to associate with instance.')
+        ),
+        SOURCE_DEST_CHECK: properties.Schema(
+            properties.Schema.BOOLEAN,
+            _('Not Implemented.'),
+            implemented=False
+        ),
+        SUBNET_ID: properties.Schema(
+            properties.Schema.STRING,
+            _('Subnet ID to launch instance in.')
+        ),
+        TAGS: properties.Schema(
+            properties.Schema.LIST,
+            _('Tags to attach to instance.'),
+            schema=properties.Schema(
+                properties.Schema.MAP,
+                schema={
+                    TAG_KEY: properties.Schema(
+                        properties.Schema.STRING,
+                        required=True
+                    ),
+                    TAG_VALUE: properties.Schema(
+                        properties.Schema.STRING,
+                        required=True
+                    ),
+                },
+            ),
+            update_allowed=True
+        ),
+        NOVA_SCHEDULER_HINTS: properties.Schema(
+            properties.Schema.LIST,
+            _('Scheduler hints to pass to Nova (Heat extension).'),
+            schema=properties.Schema(
+                properties.Schema.MAP,
+                schema={
+                    NOVA_SCHEDULER_HINT_KEY: properties.Schema(
+                        properties.Schema.STRING,
+                        required=True
+                    ),
+                    NOVA_SCHEDULER_HINT_VALUE: properties.Schema(
+                        properties.Schema.STRING,
+                        required=True
+                    ),
+                },
+            )
+        ),
+        TENANCY: properties.Schema(
+            properties.Schema.STRING,
+            _('Not Implemented.'),
+            constraints=[
+                constraints.AllowedValues(['dedicated', 'default']),
+            ],
+            implemented=False
+        ),
+        USER_DATA: properties.Schema(
+            properties.Schema.STRING,
+            _('User data to pass to instance.')
+        ),
+        VOLUMES: properties.Schema(
+            properties.Schema.LIST,
+            _('Volumes to attach to instance.'),
+            default=[],
+            schema=properties.Schema(
+                properties.Schema.MAP,
+                schema={
+                    VOLUME_DEVICE: properties.Schema(
+                        properties.Schema.STRING,
+                        _('The device where the volume is exposed on the '
+                          'instance. This assignment may not be honored and '
+                          'it is advised that the path '
+                          '/dev/disk/by-id/virtio-<VolumeId> be used '
+                          'instead.'),
+                        required=True
+                    ),
+                    VOLUME_ID: properties.Schema(
+                        properties.Schema.STRING,
+                        _('The ID of the volume to be attached.'),
+                        required=True
+                    ),
+                }
+            )
+        ),
+    }
 
     attributes_schema = {'AvailabilityZone': _('The Availability Zone where '
                                                'the specified instance is '
@@ -187,7 +297,6 @@ class Instance(resource.Resource):
     def __init__(self, name, json_snippet, stack):
         super(Instance, self).__init__(name, json_snippet, stack)
         self.ipaddress = None
-        self.mime_string = None
 
     def _set_ipaddress(self, networks):
         '''
@@ -212,7 +321,7 @@ class Instance(resource.Resource):
     def _resolve_attribute(self, name):
         res = None
         if name == 'AvailabilityZone':
-            res = self.properties['AvailabilityZone']
+            res = self.properties[self.AVAILABILITY_ZONE]
         elif name in ['PublicIp', 'PrivateIp', 'PublicDnsName',
                       'PrivateDnsName']:
             res = self._ipaddress()
@@ -256,88 +365,59 @@ class Instance(resource.Resource):
 
                     if security_groups:
                         props['security_groups'] = \
-                            self._get_security_groups_id(security_groups)
+                            neutron.NeutronResource.get_secgroup_uuids(
+                                security_groups, self.neutron())
 
                     port = neutronclient.create_port({'port': props})['port']
                     nics = [{'port-id': port['id']}]
 
         return nics
 
-    def _get_security_groups_id(self, security_groups):
-        """Extract security_groups ids from security group list
-
-        This function will be deprecated if Neutron client resolves security
-        group name to id internally.
-
-        Args:
-            security_groups : A list contains security_groups ids or names
-        Returns:
-            A list of security_groups ids.
-        """
-        ids = []
-        response = self.neutron().list_security_groups(self.resource_id)
-        for item in response:
-            if item['security_groups'] is not None:
-                for security_group in security_groups:
-                    for groups in item['security_groups']:
-                        if groups['name'] == security_group \
-                                and groups['id'] not in ids:
-                            ids.append(groups['id'])
-                        elif groups['id'] == security_group \
-                                and groups['id'] not in ids:
-                            ids.append(groups['id'])
-        return ids
-
     def _get_security_groups(self):
         security_groups = []
-        for property in ('SecurityGroups', 'SecurityGroupIds'):
-            if self.properties.get(property) is not None:
-                for sg in self.properties.get(property):
+        for key in (self.SECURITY_GROUPS, self.SECURITY_GROUP_IDS):
+            if self.properties.get(key) is not None:
+                for sg in self.properties.get(key):
                     security_groups.append(sg)
         if not security_groups:
             security_groups = None
         return security_groups
 
-    def get_mime_string(self, userdata):
-        if not self.mime_string:
-            self.mime_string = nova_utils.build_userdata(self, userdata)
-        return self.mime_string
+    def _get_nova_metadata(self, properties):
+        if properties is None or properties.get(self.TAGS) is None:
+            return None
+
+        return dict((tm[self.TAG_KEY], tm[self.TAG_VALUE])
+                    for tm in properties[self.TAGS])
 
     def handle_create(self):
         security_groups = self._get_security_groups()
 
-        userdata = self.properties['UserData'] or ''
-        flavor = self.properties['InstanceType']
-        availability_zone = self.properties['AvailabilityZone']
+        userdata = self.properties[self.USER_DATA] or ''
+        flavor = self.properties[self.INSTANCE_TYPE]
+        availability_zone = self.properties[self.AVAILABILITY_ZONE]
 
-        key_name = self.properties['KeyName']
+        key_name = self.properties[self.KEY_NAME]
         if key_name:
             # confirm keypair exists
             nova_utils.get_keypair(self.nova(), key_name)
 
-        image_name = self.properties['ImageId']
+        image_name = self.properties[self.IMAGE_ID]
 
         image_id = nova_utils.get_image_id(self.nova(), image_name)
 
         flavor_id = nova_utils.get_flavor_id(self.nova(), flavor)
 
-        tags = {}
-        if self.properties['Tags']:
-            for tm in self.properties['Tags']:
-                tags[tm['Key']] = tm['Value']
-        else:
-            tags = None
-
         scheduler_hints = {}
-        if self.properties['NovaSchedulerHints']:
-            for tm in self.properties['NovaSchedulerHints']:
-                scheduler_hints[tm['Key']] = tm['Value']
+        if self.properties[self.NOVA_SCHEDULER_HINTS]:
+            for tm in self.properties[self.NOVA_SCHEDULER_HINTS]:
+                scheduler_hints[tm[self.TAG_KEY]] = tm[self.TAG_VALUE]
         else:
             scheduler_hints = None
 
-        nics = self._build_nics(self.properties['NetworkInterfaces'],
+        nics = self._build_nics(self.properties[self.NETWORK_INTERFACES],
                                 security_groups=security_groups,
-                                subnet_id=self.properties['SubnetId'])
+                                subnet_id=self.properties[self.SUBNET_ID])
         server = None
 
         try:
@@ -347,8 +427,8 @@ class Instance(resource.Resource):
                 flavor=flavor_id,
                 key_name=key_name,
                 security_groups=security_groups,
-                userdata=self.get_mime_string(userdata),
-                meta=tags,
+                userdata=nova_utils.build_userdata(self, userdata),
+                meta=self._get_nova_metadata(self.properties),
                 scheduler_hints=scheduler_hints,
                 nics=nics,
                 availability_zone=availability_zone)
@@ -410,19 +490,27 @@ class Instance(resource.Resource):
         Return an iterator over (volume_id, device) tuples for all volumes
         that should be attached to this instance.
         """
-        volumes = self.properties['Volumes']
-        if volumes is None:
-            return []
+        volumes = self.properties[self.VOLUMES]
 
-        return ((vol['VolumeId'], vol['Device']) for vol in volumes)
+        return ((vol[self.VOLUME_ID],
+                 vol[self.VOLUME_DEVICE]) for vol in volumes)
 
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
         if 'Metadata' in tmpl_diff:
             self.metadata = tmpl_diff['Metadata']
-        if 'InstanceType' in prop_diff:
-            flavor = prop_diff['InstanceType']
-            flavor_id = nova_utils.get_flavor_id(self.nova(), flavor)
+
+        server = None
+        if self.TAGS in prop_diff:
             server = self.nova().servers.get(self.resource_id)
+            nova_utils.meta_update(self.nova(),
+                                   server,
+                                   self._get_nova_metadata(prop_diff))
+
+        if self.INSTANCE_TYPE in prop_diff:
+            flavor = prop_diff[self.INSTANCE_TYPE]
+            flavor_id = nova_utils.get_flavor_id(self.nova(), flavor)
+            if not server:
+                server = self.nova().servers.get(self.resource_id)
             checker = scheduler.TaskRunner(nova_utils.resize, server, flavor,
                                            flavor_id)
             checker.start()
@@ -447,19 +535,19 @@ class Instance(resource.Resource):
             return res
 
         # check validity of key
-        key_name = self.properties.get('KeyName', None)
+        key_name = self.properties.get(self.KEY_NAME)
         if key_name:
             nova_utils.get_keypair(self.nova(), key_name)
 
         # check validity of security groups vs. network interfaces
         security_groups = self._get_security_groups()
-        if security_groups and self.properties.get('NetworkInterfaces'):
+        if security_groups and self.properties.get(self.NETWORK_INTERFACES):
             raise exception.ResourcePropertyConflict(
-                'SecurityGroups/SecurityGroupIds',
-                'NetworkInterfaces')
+                '/'.join([self.SECURITY_GROUPS, self.SECURITY_GROUP_IDS]),
+                self.NETWORK_INTERFACES)
 
         # make sure the image exists.
-        nova_utils.get_image_id(self.nova(), self.properties['ImageId'])
+        nova_utils.get_image_id(self.nova(), self.properties[self.IMAGE_ID])
 
     @scheduler.wrappertask
     def _delete_server(self, server):
@@ -536,7 +624,7 @@ class Instance(resource.Resource):
             raise exception.NotFound(_('Failed to find instance %s') %
                                      self.resource_id)
         else:
-            logger.debug("suspending instance %s" % self.resource_id)
+            logger.debug(_("suspending instance %s") % self.resource_id)
             # We want the server.suspend to happen after the volume
             # detachement has finished, so pass both tasks and the server
             suspend_runner = scheduler.TaskRunner(server.suspend)
@@ -590,7 +678,7 @@ class Instance(resource.Resource):
             raise exception.NotFound(_('Failed to find instance %s') %
                                      self.resource_id)
         else:
-            logger.debug("resuming instance %s" % self.resource_id)
+            logger.debug(_("resuming instance %s") % self.resource_id)
             server.resume()
             return server, scheduler.TaskRunner(self._attach_volumes_task())
 

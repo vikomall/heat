@@ -11,6 +11,9 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
+
+import copy
+import uuid
 import mox
 
 from heat.engine import environment
@@ -20,7 +23,6 @@ from heat.engine.resources import nova_utils
 from heat.common import template_format
 from heat.engine import parser
 from heat.engine import scheduler
-from heat.openstack.common import uuidutils
 from heat.tests.common import HeatTestCase
 from heat.tests import utils
 
@@ -133,7 +135,7 @@ class ServerTagsTest(HeatTestCase):
         template = parser.Template(t)
         stack = parser.Stack(utils.dummy_context(), stack_name, template,
                              environment.Environment({'KeyName': 'test'}),
-                             stack_id=uuidutils.generate_uuid())
+                             stack_id=str(uuid.uuid4()))
 
         t['Resources']['WebServer']['Properties']['Tags'] = intags
         instance = instances.Instance(stack_name,
@@ -148,7 +150,11 @@ class ServerTagsTest(HeatTestCase):
         server_userdata = nova_utils.build_userdata(
             instance,
             instance.t['Properties']['UserData'])
-        instance.mime_string = server_userdata
+        self.m.StubOutWithMock(nova_utils, 'build_userdata')
+        nova_utils.build_userdata(
+            instance,
+            instance.t['Properties']['UserData']).AndReturn(server_userdata)
+
         self.m.StubOutWithMock(self.fc.servers, 'create')
         self.fc.servers.create(
             image=1, flavor=1, key_name='test',
@@ -171,13 +177,41 @@ class ServerTagsTest(HeatTestCase):
         # nova call.
         self.m.VerifyAll()
 
+    def test_instance_tags_updated(self):
+        tags = [{'Key': 'Food', 'Value': 'yum'}]
+        metadata = dict((tm['Key'], tm['Value']) for tm in tags)
+
+        instance = self._setup_test_instance(intags=tags, nova_tags=metadata)
+        self.m.ReplayAll()
+        scheduler.TaskRunner(instance.create)()
+        self.assertEqual(instance.state, (instance.CREATE, instance.COMPLETE))
+        # we are just using mock to verify that the tags get through to the
+        # nova call.
+        self.m.VerifyAll()
+        self.m.UnsetStubs()
+
+        new_tags = [{'Key': 'Food', 'Value': 'yuk'}]
+        new_metadata = dict((tm['Key'], tm['Value']) for tm in new_tags)
+
+        self.m.StubOutWithMock(instance, 'nova')
+        instance.nova().MultipleTimes().AndReturn(self.fc)
+        self.m.StubOutWithMock(self.fc.servers, 'set_meta')
+        self.fc.servers.set_meta(self.fc.servers.list()[1],
+                                 new_metadata).AndReturn(None)
+        self.m.ReplayAll()
+        update_template = copy.deepcopy(instance.t)
+        update_template['Properties']['Tags'] = new_tags
+        scheduler.TaskRunner(instance.update, update_template)()
+        self.assertEqual(instance.state, (instance.UPDATE, instance.COMPLETE))
+        self.m.VerifyAll()
+
     def _setup_test_group(self, intags=None, nova_tags=None):
         stack_name = 'tag_test'
         t = template_format.parse(group_template)
         template = parser.Template(t)
         stack = parser.Stack(utils.dummy_context(), stack_name, template,
                              environment.Environment({'KeyName': 'test'}),
-                             stack_id=uuidutils.generate_uuid())
+                             stack_id=str(uuid.uuid4()))
 
         t['Resources']['WebServer']['Properties']['Tags'] = intags
 
@@ -225,7 +259,7 @@ class ServerTagsTest(HeatTestCase):
         template = parser.Template(t)
         stack = parser.Stack(utils.dummy_context(), stack_name, template,
                              environment.Environment({'KeyName': 'test'}),
-                             stack_id=uuidutils.generate_uuid())
+                             stack_id=str(uuid.uuid4()))
         t['Resources']['WebServer']['Properties']['Tags'] += intags
 
         # create the launch configuration

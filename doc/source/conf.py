@@ -167,8 +167,9 @@ extensions = ['sphinx.ext.autodoc',
               'sphinx.ext.coverage',
               'sphinx.ext.pngmath',
               'sphinx.ext.viewcode',
+              'sphinx.ext.doctest',
               'oslo.sphinx',
-              'heat.doc.resources']
+              'ext.resources']
 
 todo_include_todos = True
 
@@ -378,6 +379,9 @@ man_pages = [
      [u'Heat Developers'], 1),
     ('man/heat-keystone-setup', 'heat-keystone-setup',
      u'Script which sets up keystone for usage by Heat',
+     [u'Heat Developers'], 1),
+    ('man/heat-manage', 'heat-manage',
+     u'Script which helps manage specific database operations',
      [u'Heat Developers'], 1),
 ]
 

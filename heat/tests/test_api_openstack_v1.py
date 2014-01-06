@@ -22,10 +22,12 @@ from heat.common import identifier
 from heat.openstack.common import rpc
 
 from heat.common import exception as heat_exc
+from heat.common import policy
 from heat.common.wsgi import Request
 from heat.common import urlfetch
 from heat.openstack.common.rpc import common as rpc_common
 from heat.rpc import api as rpc_api
+from heat.rpc import client as rpc_client
 from heat.tests.common import HeatTestCase
 
 import heat.api.openstack.v1 as api_v1
@@ -33,6 +35,7 @@ import heat.api.openstack.v1.stacks as stacks
 import heat.api.openstack.v1.resources as resources
 import heat.api.openstack.v1.events as events
 import heat.api.openstack.v1.actions as actions
+import heat.api.openstack.v1.build_info as build_info
 from heat.tests import utils
 
 import heat.api.middleware.fault as fault
@@ -225,32 +228,41 @@ class ControllerTest(object):
     def __init__(self, *args, **kwargs):
         super(ControllerTest, self).__init__(*args, **kwargs)
 
-        cfg.CONF.set_default('host', 'host')
+        cfg.CONF.set_default('host', 'server.test')
         self.topic = rpc_api.ENGINE_TOPIC
         self.api_version = '1.0'
         self.tenant = 't'
+        self.mock_enforce = None
 
     def _environ(self, path):
         return {
-            'SERVER_NAME': 'heat.example.com',
+            'SERVER_NAME': 'server.test',
             'SERVER_PORT': 8004,
             'SCRIPT_NAME': '/v1',
             'PATH_INFO': '/%s' % self.tenant + path,
             'wsgi.url_scheme': 'http',
         }
 
-    def _simple_request(self, path, method='GET'):
+    def _simple_request(self, path, params=None, method='GET'):
         environ = self._environ(path)
         environ['REQUEST_METHOD'] = method
 
+        if params:
+            qs = "&".join(["=".join([k, str(params[k])]) for k in params])
+            environ['QUERY_STRING'] = qs
+
         req = Request(environ)
         req.context = utils.dummy_context('api_test_user', self.tenant)
+        self.context = req.context
         return req
 
-    def _get(self, path):
-        return self._simple_request(path)
+    def _get(self, path, params=None):
+        return self._simple_request(path, params=params)
 
     def _delete(self, path):
+        return self._simple_request(path, method='DELETE')
+
+    def _abandon(self, path):
         return self._simple_request(path, method='DELETE')
 
     def _data_request(self, path, data, content_type='application/json',
@@ -260,6 +272,7 @@ class ControllerTest(object):
 
         req = Request(environ)
         req.context = utils.dummy_context('api_test_user', self.tenant)
+        self.context = req.context
         req.body = data
         return req
 
@@ -270,11 +283,31 @@ class ControllerTest(object):
         return self._data_request(path, data, content_type, method='PUT')
 
     def _url(self, id):
-        host = 'heat.example.com:8004'
+        host = 'server.test:8004'
         path = '/v1/%(tenant)s/stacks/%(stack_name)s/%(stack_id)s%(path)s' % id
         return 'http://%s%s' % (host, path)
 
+    def tearDown(self):
+        # Common tearDown to assert that policy enforcement happens for all
+        # controller actions
+        if self.mock_enforce:
+            self.mock_enforce.assert_called_with(
+                action=self.action,
+                context=self.context,
+                scope=self.controller.REQUEST_SCOPE)
+            self.assertEqual(self.expected_request_count,
+                             len(self.mock_enforce.call_args_list))
+        super(ControllerTest, self).tearDown()
 
+    def _mock_enforce_setup(self, mocker, action, allowed=True,
+                            expected_request_count=1):
+        self.mock_enforce = mocker
+        self.action = action
+        self.mock_enforce.return_value = allowed
+        self.expected_request_count = expected_request_count
+
+
+@mock.patch.object(policy.Enforcer, 'enforce')
 class StackControllerTest(ControllerTest, HeatTestCase):
     '''
     Tests the API class which acts as the WSGI controller,
@@ -292,7 +325,8 @@ class StackControllerTest(ControllerTest, HeatTestCase):
         self.controller = stacks.StackController(options=cfgopts)
 
     @mock.patch.object(rpc, 'call')
-    def test_index(self, mock_call):
+    def test_index(self, mock_call, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'index', True)
         req = self._get('/stacks')
 
         identity = identifier.HeatIdentifier(self.tenant, 'wordpress', '1')
@@ -336,15 +370,107 @@ class StackControllerTest(ControllerTest, HeatTestCase):
             ]
         }
         self.assertEqual(result, expected)
+        default_args = {'limit': None, 'sort_keys': None, 'marker': None,
+                        'sort_dir': None, 'filters': {}}
         mock_call.assert_called_once_with(req.context, self.topic,
                                           {'namespace': None,
                                           'method': 'list_stacks',
-                                          'args': {},
+                                          'args': default_args,
                                           'version': self.api_version},
                                           None)
 
     @mock.patch.object(rpc, 'call')
-    def test_detail(self, mock_call):
+    def test_index_whitelists_pagination_params(self, mock_call, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'index', True)
+        params = {
+            'limit': 'fake limit',
+            'sort_keys': 'fake sort keys',
+            'marker': 'fake marker',
+            'sort_dir': 'fake sort dir',
+            'balrog': 'you shall not pass!'
+        }
+        req = self._get('/stacks', params=params)
+        mock_call.return_value = []
+
+        result = self.controller.index(req, tenant_id=self.tenant)
+
+        rpc_call_args, _ = mock_call.call_args
+        engine_args = rpc_call_args[2]['args']
+        self.assertEqual(5, len(engine_args))
+        self.assertIn('limit', engine_args)
+        self.assertIn('sort_keys', engine_args)
+        self.assertIn('marker', engine_args)
+        self.assertIn('sort_dir', engine_args)
+        self.assertIn('filters', engine_args)
+        self.assertNotIn('balrog', engine_args)
+
+    @mock.patch.object(rpc, 'call')
+    def test_index_whitelist_filter_params(self, mock_call, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'index', True)
+        params = {
+            'status': 'fake status',
+            'name': 'fake name',
+            'balrog': 'you shall not pass!'
+        }
+        req = self._get('/stacks', params=params)
+        mock_call.return_value = []
+
+        result = self.controller.index(req, tenant_id=self.tenant)
+
+        rpc_call_args, _ = mock_call.call_args
+        engine_args = rpc_call_args[2]['args']
+        self.assertIn('filters', engine_args)
+
+        filters = engine_args['filters']
+        self.assertEqual(2, len(filters))
+        self.assertIn('status', filters)
+        self.assertIn('name', filters)
+        self.assertNotIn('balrog', filters)
+
+    def test_index_returns_stack_count_if_with_count_is_true(
+            self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'index', True)
+        params = {'with_count': 'True'}
+        req = self._get('/stacks', params=params)
+        engine = self.controller.engine
+
+        engine.list_stacks = mock.Mock(return_value=[])
+        engine.count_stacks = mock.Mock(return_value=0)
+
+        result = self.controller.index(req, tenant_id=self.tenant)
+        self.assertEqual(0, result['count'])
+
+    def test_index_doesnt_return_stack_count_if_with_count_is_falsy(
+            self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'index', True)
+        params = {'with_count': ''}
+        req = self._get('/stacks', params=params)
+        engine = self.controller.engine
+
+        engine.list_stacks = mock.Mock(return_value=[])
+        engine.count_stacks = mock.Mock()
+
+        result = self.controller.index(req, tenant_id=self.tenant)
+        self.assertNotIn('count', result)
+        assert not engine.count_stacks.called
+
+    @mock.patch.object(rpc_client.EngineClient, 'count_stacks')
+    def test_index_doesnt_break_with_old_engine(self, mock_count_stacks,
+                                                mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'index', True)
+        params = {'with_count': 'Truthy'}
+        req = self._get('/stacks', params=params)
+        engine = self.controller.engine
+
+        engine.list_stacks = mock.Mock(return_value=[])
+        mock_count_stacks.side_effect = AttributeError("Should not exist")
+
+        result = self.controller.index(req, tenant_id=self.tenant)
+        self.assertNotIn('count', result)
+
+    @mock.patch.object(rpc, 'call')
+    def test_detail(self, mock_call, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'detail', True)
         req = self._get('/stacks/detail')
 
         identity = identifier.HeatIdentifier(self.tenant, 'wordpress', '1')
@@ -396,15 +522,18 @@ class StackControllerTest(ControllerTest, HeatTestCase):
         }
 
         self.assertEqual(result, expected)
+        default_args = {'limit': None, 'sort_keys': None, 'marker': None,
+                        'sort_dir': None, 'filters': None}
         mock_call.assert_called_once_with(req.context, self.topic,
                                           {'namespace': None,
                                           'method': 'list_stacks',
-                                          'args': {},
+                                          'args': default_args,
                                           'version': self.api_version},
                                           None)
 
     @mock.patch.object(rpc, 'call')
-    def test_index_rmt_aterr(self, mock_call):
+    def test_index_rmt_aterr(self, mock_call, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'index', True)
         req = self._get('/stacks')
 
         mock_call.side_effect = to_remote_error(AttributeError())
@@ -418,12 +547,25 @@ class StackControllerTest(ControllerTest, HeatTestCase):
         mock_call.assert_called_once_with(req.context, self.topic,
                                           {'namespace': None,
                                           'method': 'list_stacks',
-                                          'args': {},
+                                          'args': mock.ANY,
                                           'version': self.api_version},
                                           None)
 
+    def test_index_err_denied_policy(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'index', False)
+
+        req = self._get('/stacks')
+
+        resp = request_with_middleware(fault.FaultWrapper,
+                                       self.controller.index,
+                                       req, tenant_id=self.tenant)
+
+        self.assertEqual(403, resp.status_int)
+        self.assertIn('403 Forbidden', str(resp))
+
     @mock.patch.object(rpc, 'call')
-    def test_index_rmt_interr(self, mock_call):
+    def test_index_rmt_interr(self, mock_call, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'index', True)
         req = self._get('/stacks')
 
         mock_call.side_effect = to_remote_error(Exception())
@@ -437,11 +579,12 @@ class StackControllerTest(ControllerTest, HeatTestCase):
         mock_call.assert_called_once_with(req.context, self.topic,
                                           {'namespace': None,
                                           'method': 'list_stacks',
-                                          'args': {},
+                                          'args': mock.ANY,
                                           'version': self.api_version},
                                           None)
 
-    def test_create(self):
+    def test_create(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'create', True)
         identity = identifier.HeatIdentifier(self.tenant, 'wordpress', '1')
         template = {u'Foo': u'bar'}
         json_template = json.dumps(template)
@@ -478,7 +621,8 @@ class StackControllerTest(ControllerTest, HeatTestCase):
 
         self.m.VerifyAll()
 
-    def test_create_with_files(self):
+    def test_create_with_files(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'create', True)
         identity = identifier.HeatIdentifier(self.tenant, 'wordpress', '1')
         template = {u'Foo': u'bar'}
         json_template = json.dumps(template)
@@ -515,7 +659,8 @@ class StackControllerTest(ControllerTest, HeatTestCase):
 
         self.m.VerifyAll()
 
-    def test_create_err_rpcerr(self):
+    def test_create_err_rpcerr(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'create', True, 3)
         stack_name = "wordpress"
         template = {u'Foo': u'bar'}
         parameters = {u'InstanceType': u'm1.xlarge'}
@@ -586,7 +731,8 @@ class StackControllerTest(ControllerTest, HeatTestCase):
         self.assertEqual(resp.json['error']['type'], 'UserParameterMissing')
         self.m.VerifyAll()
 
-    def test_create_err_existing(self):
+    def test_create_err_existing(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'create', True)
         stack_name = "wordpress"
         template = {u'Foo': u'bar'}
         parameters = {u'InstanceType': u'm1.xlarge'}
@@ -621,7 +767,28 @@ class StackControllerTest(ControllerTest, HeatTestCase):
         self.assertEqual(resp.json['error']['type'], 'StackExists')
         self.m.VerifyAll()
 
-    def test_create_err_engine(self):
+    def test_create_err_denied_policy(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'create', False)
+        stack_name = "wordpress"
+        template = {u'Foo': u'bar'}
+        parameters = {u'InstanceType': u'm1.xlarge'}
+        json_template = json.dumps(template)
+        body = {'template': template,
+                'stack_name': stack_name,
+                'parameters': parameters,
+                'timeout_mins': 30}
+
+        req = self._post('/stacks', json.dumps(body))
+
+        resp = request_with_middleware(fault.FaultWrapper,
+                                       self.controller.create,
+                                       req, tenant_id=self.tenant, body=body)
+
+        self.assertEqual(403, resp.status_int)
+        self.assertIn('403 Forbidden', str(resp))
+
+    def test_create_err_engine(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'create', True)
         stack_name = "wordpress"
         template = {u'Foo': u'bar'}
         parameters = {u'InstanceType': u'm1.xlarge'}
@@ -656,7 +823,7 @@ class StackControllerTest(ControllerTest, HeatTestCase):
         self.assertEqual(resp.json['error']['type'], 'StackValidationFailed')
         self.m.VerifyAll()
 
-    def test_create_err_stack_bad_reqest(self):
+    def test_create_err_stack_bad_reqest(self, mock_enforce):
         cfg.CONF.set_override('debug', True)
         template = {u'Foo': u'bar'}
         parameters = {u'InstanceType': u'm1.xlarge'}
@@ -678,7 +845,8 @@ class StackControllerTest(ControllerTest, HeatTestCase):
         self.assertEqual(resp.json['error']['type'], 'HTTPBadRequest')
         self.assertIsNotNone(resp.json['error']['traceback'])
 
-    def test_lookup(self):
+    def test_lookup(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'lookup', True)
         identity = identifier.HeatIdentifier(self.tenant, 'wordpress', '1')
 
         req = self._get('/stacks/%(stack_name)s' % identity)
@@ -702,7 +870,8 @@ class StackControllerTest(ControllerTest, HeatTestCase):
             self.fail('No redirect generated')
         self.m.VerifyAll()
 
-    def test_lookup_arn(self):
+    def test_lookup_arn(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'lookup', True)
         identity = identifier.HeatIdentifier(self.tenant, 'wordpress', '1')
 
         req = self._get('/stacks%s' % identity.arn_url_path())
@@ -718,7 +887,8 @@ class StackControllerTest(ControllerTest, HeatTestCase):
             self.fail('No redirect generated')
         self.m.VerifyAll()
 
-    def test_lookup_nonexistant(self):
+    def test_lookup_nonexistent(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'lookup', True)
         stack_name = 'wibble'
 
         req = self._get('/stacks/%(stack_name)s' % {
@@ -743,7 +913,23 @@ class StackControllerTest(ControllerTest, HeatTestCase):
         self.assertEqual(resp.json['error']['type'], 'StackNotFound')
         self.m.VerifyAll()
 
-    def test_lookup_resource(self):
+    def test_lookup_err_policy(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'lookup', False)
+        stack_name = 'wibble'
+
+        req = self._get('/stacks/%(stack_name)s' % {
+            'stack_name': stack_name})
+
+        resp = request_with_middleware(fault.FaultWrapper,
+                                       self.controller.lookup,
+                                       req, tenant_id=self.tenant,
+                                       stack_name=stack_name)
+
+        self.assertEqual(403, resp.status_int)
+        self.assertIn('403 Forbidden', str(resp))
+
+    def test_lookup_resource(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'lookup', True)
         identity = identifier.HeatIdentifier(self.tenant, 'wordpress', '1')
 
         req = self._get('/stacks/%(stack_name)s/resources' % identity)
@@ -769,7 +955,8 @@ class StackControllerTest(ControllerTest, HeatTestCase):
             self.fail('No redirect generated')
         self.m.VerifyAll()
 
-    def test_lookup_resource_nonexistant(self):
+    def test_lookup_resource_nonexistent(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'lookup', True)
         stack_name = 'wibble'
 
         req = self._get('/stacks/%(stack_name)s/resources' % {
@@ -795,7 +982,24 @@ class StackControllerTest(ControllerTest, HeatTestCase):
         self.assertEqual(resp.json['error']['type'], 'StackNotFound')
         self.m.VerifyAll()
 
-    def test_show(self):
+    def test_lookup_resource_err_denied_policy(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'lookup', False)
+        stack_name = 'wibble'
+
+        req = self._get('/stacks/%(stack_name)s/resources' % {
+            'stack_name': stack_name})
+
+        resp = request_with_middleware(fault.FaultWrapper,
+                                       self.controller.lookup,
+                                       req, tenant_id=self.tenant,
+                                       stack_name=stack_name,
+                                       path='resources')
+
+        self.assertEqual(403, resp.status_int)
+        self.assertIn('403 Forbidden', str(resp))
+
+    def test_show(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'show', True)
         identity = identifier.HeatIdentifier(self.tenant, 'wordpress', '6')
 
         req = self._get('/stacks/%(stack_name)s/%(stack_id)s' % identity)
@@ -864,7 +1068,8 @@ class StackControllerTest(ControllerTest, HeatTestCase):
         self.assertEqual(response, expected)
         self.m.VerifyAll()
 
-    def test_show_notfound(self):
+    def test_show_notfound(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'show', True)
         identity = identifier.HeatIdentifier(self.tenant, 'wibble', '6')
 
         req = self._get('/stacks/%(stack_name)s/%(stack_id)s' % identity)
@@ -889,19 +1094,11 @@ class StackControllerTest(ControllerTest, HeatTestCase):
         self.assertEqual(resp.json['error']['type'], 'StackNotFound')
         self.m.VerifyAll()
 
-    def test_show_invalidtenant(self):
+    def test_show_invalidtenant(self, mock_enforce):
         identity = identifier.HeatIdentifier('wibble', 'wordpress', '6')
 
         req = self._get('/stacks/%(stack_name)s/%(stack_id)s' % identity)
 
-        error = heat_exc.InvalidTenant(target='a', actual='b')
-        self.m.StubOutWithMock(rpc, 'call')
-        rpc.call(req.context, self.topic,
-                 {'namespace': None,
-                  'method': 'show_stack',
-                  'args': {'stack_identity': dict(identity)},
-                  'version': self.api_version},
-                 None).AndRaise(to_remote_error(error))
         self.m.ReplayAll()
 
         resp = request_with_middleware(fault.FaultWrapper,
@@ -910,11 +1107,27 @@ class StackControllerTest(ControllerTest, HeatTestCase):
                                        stack_name=identity.stack_name,
                                        stack_id=identity.stack_id)
 
-        self.assertEqual(resp.json['code'], 403)
-        self.assertEqual(resp.json['error']['type'], 'InvalidTenant')
+        self.assertEqual(resp.status_int, 403)
+        self.assertIn('403 Forbidden', str(resp))
         self.m.VerifyAll()
 
-    def test_get_template(self):
+    def test_show_err_denied_policy(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'show', False)
+        identity = identifier.HeatIdentifier(self.tenant, 'wordpress', '6')
+
+        req = self._get('/stacks/%(stack_name)s/%(stack_id)s' % identity)
+
+        resp = request_with_middleware(fault.FaultWrapper,
+                                       self.controller.show,
+                                       req, tenant_id=identity.tenant,
+                                       stack_name=identity.stack_name,
+                                       stack_id=identity.stack_id)
+
+        self.assertEqual(403, resp.status_int)
+        self.assertIn('403 Forbidden', str(resp))
+
+    def test_get_template(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'template', True)
         identity = identifier.HeatIdentifier(self.tenant, 'wordpress', '6')
         req = self._get('/stacks/%(stack_name)s/%(stack_id)s' % identity)
         template = {u'Foo': u'bar'}
@@ -935,7 +1148,25 @@ class StackControllerTest(ControllerTest, HeatTestCase):
         self.assertEqual(response, template)
         self.m.VerifyAll()
 
-    def test_get_template_err_notfound(self):
+    def test_get_template_err_denied_policy(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'template', False)
+        identity = identifier.HeatIdentifier(self.tenant, 'wordpress', '6')
+        req = self._get('/stacks/%(stack_name)s/%(stack_id)s/template'
+                        % identity)
+
+        self.m.ReplayAll()
+        resp = request_with_middleware(fault.FaultWrapper,
+                                       self.controller.template,
+                                       req, tenant_id=identity.tenant,
+                                       stack_name=identity.stack_name,
+                                       stack_id=identity.stack_id)
+
+        self.assertEqual(403, resp.status_int)
+        self.assertIn('403 Forbidden', str(resp))
+        self.m.VerifyAll()
+
+    def test_get_template_err_notfound(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'template', True)
         identity = identifier.HeatIdentifier(self.tenant, 'wordpress', '6')
         req = self._get('/stacks/%(stack_name)s/%(stack_id)s' % identity)
 
@@ -960,7 +1191,8 @@ class StackControllerTest(ControllerTest, HeatTestCase):
         self.assertEqual(resp.json['error']['type'], 'StackNotFound')
         self.m.VerifyAll()
 
-    def test_update(self):
+    def test_update(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'update', True)
         identity = identifier.HeatIdentifier(self.tenant, 'wordpress', '6')
         stack_name = u'wordpress'
         stack_id = u'6'
@@ -997,7 +1229,8 @@ class StackControllerTest(ControllerTest, HeatTestCase):
                           body=body)
         self.m.VerifyAll()
 
-    def test_update_bad_name(self):
+    def test_update_bad_name(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'update', True)
         identity = identifier.HeatIdentifier(self.tenant, 'wibble', '6')
         template = {u'Foo': u'bar'}
         json_template = json.dumps(template)
@@ -1036,7 +1269,32 @@ class StackControllerTest(ControllerTest, HeatTestCase):
         self.assertEqual(resp.json['error']['type'], 'StackNotFound')
         self.m.VerifyAll()
 
-    def test_delete(self):
+    def test_update_err_denied_policy(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'update', False)
+        identity = identifier.HeatIdentifier(self.tenant, 'wibble', '6')
+        template = {u'Foo': u'bar'}
+        json_template = json.dumps(template)
+        parameters = {u'InstanceType': u'm1.xlarge'}
+        body = {'template': template,
+                'parameters': parameters,
+                'files': {},
+                'timeout_mins': 30}
+
+        req = self._put('/stacks/%(stack_name)s/%(stack_id)s' % identity,
+                        json.dumps(body))
+
+        resp = request_with_middleware(fault.FaultWrapper,
+                                       self.controller.update,
+                                       req, tenant_id=identity.tenant,
+                                       stack_name=identity.stack_name,
+                                       stack_id=identity.stack_id,
+                                       body=body)
+
+        self.assertEqual(403, resp.status_int)
+        self.assertIn('403 Forbidden', str(resp))
+
+    def test_delete(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'delete', True)
         identity = identifier.HeatIdentifier(self.tenant, 'wordpress', '6')
         template = {u'Foo': u'bar'}
         json_template = json.dumps(template)
@@ -1064,7 +1322,76 @@ class StackControllerTest(ControllerTest, HeatTestCase):
                           stack_id=identity.stack_id)
         self.m.VerifyAll()
 
-    def test_delete_bad_name(self):
+    def test_delete_err_denied_policy(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'delete', False)
+        identity = identifier.HeatIdentifier(self.tenant, 'wordpress', '6')
+        template = {u'Foo': u'bar'}
+        json_template = json.dumps(template)
+        parameters = {u'InstanceType': u'm1.xlarge'}
+        body = {'template': template,
+                'parameters': parameters,
+                'timeout_mins': 30}
+
+        req = self._delete('/stacks/%(stack_name)s/%(stack_id)s' % identity)
+
+        resp = request_with_middleware(fault.FaultWrapper,
+                                       self.controller.delete,
+                                       req, tenant_id=self.tenant,
+                                       stack_name=identity.stack_name,
+                                       stack_id=identity.stack_id)
+
+        self.assertEqual(403, resp.status_int)
+        self.assertIn('403 Forbidden', str(resp))
+
+    def test_abandon(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'abandon', True)
+        identity = identifier.HeatIdentifier(self.tenant, 'wordpress', '6')
+        template = {u'Foo': u'bar'}
+        json_template = json.dumps(template)
+        parameters = {u'InstanceType': u'm1.xlarge'}
+        req = self._abandon('/stacks/%(stack_name)s/%(stack_id)s' % identity)
+
+        self.m.StubOutWithMock(rpc, 'call')
+        # Engine returns json data on abandon completion
+        expected = {"name": "test", "id": "123"}
+        rpc.call(req.context, self.topic,
+                 {'namespace': None,
+                  'method': 'abandon_stack',
+                  'args': {'stack_identity': dict(identity)},
+                  'version': self.api_version},
+                 None).AndReturn(expected)
+        self.m.ReplayAll()
+
+        ret = self.controller.abandon(req,
+                                      tenant_id=identity.tenant,
+                                      stack_name=identity.stack_name,
+                                      stack_id=identity.stack_id)
+        self.assertEqual(expected, ret)
+        self.m.VerifyAll()
+
+    def test_abandon_err_denied_policy(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'abandon', False)
+        identity = identifier.HeatIdentifier(self.tenant, 'wordpress', '6')
+        template = {u'Foo': u'bar'}
+        json_template = json.dumps(template)
+        parameters = {u'InstanceType': u'm1.xlarge'}
+        body = {'template': template,
+                'parameters': parameters,
+                'timeout_mins': 30}
+
+        req = self._abandon('/stacks/%(stack_name)s/%(stack_id)s' % identity)
+
+        resp = request_with_middleware(fault.FaultWrapper,
+                                       self.controller.abandon,
+                                       req, tenant_id=self.tenant,
+                                       stack_name=identity.stack_name,
+                                       stack_id=identity.stack_id)
+
+        self.assertEqual(403, resp.status_int)
+        self.assertIn('403 Forbidden', str(resp))
+
+    def test_delete_bad_name(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'delete', True)
         identity = identifier.HeatIdentifier(self.tenant, 'wibble', '6')
         template = {u'Foo': u'bar'}
         json_template = json.dumps(template)
@@ -1096,7 +1423,8 @@ class StackControllerTest(ControllerTest, HeatTestCase):
         self.assertEqual(resp.json['error']['type'], 'StackNotFound')
         self.m.VerifyAll()
 
-    def test_validate_template(self):
+    def test_validate_template(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'validate_template', True)
         template = {u'Foo': u'bar'}
         json_template = json.dumps(template)
         body = {'template': template}
@@ -1129,7 +1457,8 @@ class StackControllerTest(ControllerTest, HeatTestCase):
         self.assertEqual(response, engine_response)
         self.m.VerifyAll()
 
-    def test_validate_template_error(self):
+    def test_validate_template_error(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'validate_template', True)
         template = {u'Foo': u'bar'}
         json_template = json.dumps(template)
         body = {'template': template}
@@ -1150,7 +1479,24 @@ class StackControllerTest(ControllerTest, HeatTestCase):
                           req, tenant_id=self.tenant, body=body)
         self.m.VerifyAll()
 
-    def test_list_resource_types(self):
+    def test_validate_err_denied_policy(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'validate_template', False)
+        template = {u'Foo': u'bar'}
+        json_template = json.dumps(template)
+        body = {'template': template}
+
+        req = self._post('/validate', json.dumps(body))
+
+        resp = request_with_middleware(fault.FaultWrapper,
+                                       self.controller.validate_template,
+                                       req, tenant_id=self.tenant,
+                                       body=body)
+
+        self.assertEqual(403, resp.status_int)
+        self.assertIn('403 Forbidden', str(resp))
+
+    def test_list_resource_types(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'list_resource_types', True)
         req = self._get('/resource_types')
 
         engine_response = ['AWS::EC2::Instance',
@@ -1161,8 +1507,8 @@ class StackControllerTest(ControllerTest, HeatTestCase):
         rpc.call(req.context, self.topic,
                  {'namespace': None,
                   'method': 'list_resource_types',
-                  'args': {},
-                  'version': self.api_version},
+                  'args': {'support_status': None},
+                  'version': '1.1'},
                  None).AndReturn(engine_response)
         self.m.ReplayAll()
         response = self.controller.list_resource_types(req,
@@ -1170,27 +1516,43 @@ class StackControllerTest(ControllerTest, HeatTestCase):
         self.assertEqual(response, {'resource_types': engine_response})
         self.m.VerifyAll()
 
-    def test_list_resource_types_error(self):
+    def test_list_resource_types_error(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'list_resource_types', True)
         req = self._get('/resource_types')
 
-        error = heat_exc.ServerError(body='')
+        error = heat_exc.ResourceTypeNotFound(type_name='')
         self.m.StubOutWithMock(rpc, 'call')
         rpc.call(req.context, self.topic,
                  {'namespace': None,
                   'method': 'list_resource_types',
-                  'args': {},
-                  'version': self.api_version},
+                  'args': {'support_status': None},
+                  'version': '1.1'},
                  None).AndRaise(to_remote_error(error))
         self.m.ReplayAll()
 
         resp = request_with_middleware(fault.FaultWrapper,
                                        self.controller.list_resource_types,
                                        req, tenant_id=self.tenant)
-        self.assertEqual(resp.json['code'], 500)
-        self.assertEqual(resp.json['error']['type'], 'ServerError')
+        self.assertEqual(resp.json['code'], 404)
+        self.assertEqual(resp.json['error']['type'], 'ResourceTypeNotFound')
         self.m.VerifyAll()
 
-    def test_resource_schema(self):
+    def test_list_resource_types_err_denied_policy(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'list_resource_types', False)
+        template = {u'Foo': u'bar'}
+        json_template = json.dumps(template)
+
+        req = self._get('/resource_types')
+
+        resp = request_with_middleware(fault.FaultWrapper,
+                                       self.controller.list_resource_types,
+                                       req, tenant_id=self.tenant)
+
+        self.assertEqual(403, resp.status_int)
+        self.assertIn('403 Forbidden', str(resp))
+
+    def test_resource_schema(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'resource_schema', True)
         req = self._get('/resource_types/ResourceWithProps')
         type_name = 'ResourceWithProps'
 
@@ -1218,7 +1580,8 @@ class StackControllerTest(ControllerTest, HeatTestCase):
         self.assertEqual(response, engine_response)
         self.m.VerifyAll()
 
-    def test_resource_schema_nonexist(self):
+    def test_resource_schema_nonexist(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'resource_schema', True)
         req = self._get('/resource_types/BogusResourceType')
         type_name = 'BogusResourceType'
 
@@ -1240,8 +1603,20 @@ class StackControllerTest(ControllerTest, HeatTestCase):
         self.assertEqual(resp.json['error']['type'], 'ResourceTypeNotFound')
         self.m.VerifyAll()
 
-    def test_generate_template(self):
+    def test_resource_schema_err_denied_policy(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'resource_schema', False)
+        req = self._get('/resource_types/BogusResourceType')
+        type_name = 'BogusResourceType'
 
+        resp = request_with_middleware(fault.FaultWrapper,
+                                       self.controller.resource_schema,
+                                       req, tenant_id=self.tenant,
+                                       type_name=type_name)
+        self.assertEqual(403, resp.status_int)
+        self.assertIn('403 Forbidden', str(resp))
+
+    def test_generate_template(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'generate_template', True)
         req = self._get('/resource_types/TEST_TYPE/template')
 
         engine_response = {'Type': 'TEST_TYPE'}
@@ -1258,7 +1633,8 @@ class StackControllerTest(ControllerTest, HeatTestCase):
                                           type_name='TEST_TYPE')
         self.m.VerifyAll()
 
-    def test_generate_template_not_found(self):
+    def test_generate_template_not_found(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'generate_template', True)
         req = self._get('/resource_types/NOT_FOUND/template')
 
         error = heat_exc.ResourceTypeNotFound(type_name='a')
@@ -1278,6 +1654,17 @@ class StackControllerTest(ControllerTest, HeatTestCase):
         self.assertEqual(resp.json['error']['type'], 'ResourceTypeNotFound')
         self.m.VerifyAll()
 
+    def test_generate_template_err_denied_policy(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'generate_template', False)
+        req = self._get('/resource_types/NOT_FOUND/template')
+
+        resp = request_with_middleware(fault.FaultWrapper,
+                                       self.controller.generate_template,
+                                       req, tenant_id=self.tenant,
+                                       type_name='blah')
+        self.assertEqual(403, resp.status_int)
+        self.assertIn('403 Forbidden', str(resp))
+
 
 class StackSerializerTest(HeatTestCase):
 
@@ -1296,6 +1683,7 @@ class StackSerializerTest(HeatTestCase):
         self.assertEqual(response.headers['Content-Type'], 'application/json')
 
 
+@mock.patch.object(policy.Enforcer, 'enforce')
 class ResourceControllerTest(ControllerTest, HeatTestCase):
     '''
     Tests the API class which acts as the WSGI controller,
@@ -1312,7 +1700,8 @@ class ResourceControllerTest(ControllerTest, HeatTestCase):
         cfgopts = DummyConfig()
         self.controller = resources.ResourceController(options=cfgopts)
 
-    def test_index(self):
+    def test_index(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'index', True)
         res_name = 'WikiDatabase'
         stack_identity = identifier.HeatIdentifier(self.tenant,
                                                    'wordpress', '1')
@@ -1366,7 +1755,8 @@ class ResourceControllerTest(ControllerTest, HeatTestCase):
         self.assertEqual(result, expected)
         self.m.VerifyAll()
 
-    def test_index_nonexist(self):
+    def test_index_nonexist(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'index', True)
         stack_identity = identifier.HeatIdentifier(self.tenant,
                                                    'rubbish', '1')
 
@@ -1392,7 +1782,26 @@ class ResourceControllerTest(ControllerTest, HeatTestCase):
         self.assertEqual(resp.json['error']['type'], 'StackNotFound')
         self.m.VerifyAll()
 
-    def test_show(self):
+    def test_index_denied_policy(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'index', False)
+        res_name = 'WikiDatabase'
+        stack_identity = identifier.HeatIdentifier(self.tenant,
+                                                   'wordpress', '1')
+        res_identity = identifier.ResourceIdentifier(resource_name=res_name,
+                                                     **stack_identity)
+
+        req = self._get(stack_identity._tenant_path() + '/resources')
+
+        resp = request_with_middleware(fault.FaultWrapper,
+                                       self.controller.index,
+                                       req, tenant_id=self.tenant,
+                                       stack_name=stack_identity.stack_name,
+                                       stack_id=stack_identity.stack_id)
+        self.assertEqual(403, resp.status_int)
+        self.assertIn('403 Forbidden', str(resp))
+
+    def test_show(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'show', True)
         res_name = 'WikiDatabase'
         stack_identity = identifier.HeatIdentifier(self.tenant,
                                                    'wordpress', '6')
@@ -1452,7 +1861,8 @@ class ResourceControllerTest(ControllerTest, HeatTestCase):
         self.assertEqual(result, expected)
         self.m.VerifyAll()
 
-    def test_show_nonexist(self):
+    def test_show_nonexist(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'show', True)
         res_name = 'WikiDatabase'
         stack_identity = identifier.HeatIdentifier(self.tenant,
                                                    'rubbish', '1')
@@ -1483,7 +1893,8 @@ class ResourceControllerTest(ControllerTest, HeatTestCase):
         self.assertEqual(resp.json['error']['type'], 'StackNotFound')
         self.m.VerifyAll()
 
-    def test_show_nonexist_resource(self):
+    def test_show_nonexist_resource(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'show', True)
         res_name = 'Wibble'
         stack_identity = identifier.HeatIdentifier(self.tenant,
                                                    'wordpress', '1')
@@ -1514,7 +1925,8 @@ class ResourceControllerTest(ControllerTest, HeatTestCase):
         self.assertEqual(resp.json['error']['type'], 'ResourceNotFound')
         self.m.VerifyAll()
 
-    def test_show_uncreated_resource(self):
+    def test_show_uncreated_resource(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'show', True)
         res_name = 'WikiDatabase'
         stack_identity = identifier.HeatIdentifier(self.tenant,
                                                    'wordpress', '1')
@@ -1545,7 +1957,27 @@ class ResourceControllerTest(ControllerTest, HeatTestCase):
         self.assertEqual(resp.json['error']['type'], 'ResourceNotAvailable')
         self.m.VerifyAll()
 
-    def test_metadata_show(self):
+    def test_show_err_denied_policy(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'show', False)
+        res_name = 'WikiDatabase'
+        stack_identity = identifier.HeatIdentifier(self.tenant,
+                                                   'wordpress', '1')
+        res_identity = identifier.ResourceIdentifier(resource_name=res_name,
+                                                     **stack_identity)
+
+        req = self._get(res_identity._tenant_path())
+
+        resp = request_with_middleware(fault.FaultWrapper,
+                                       self.controller.show,
+                                       req, tenant_id=self.tenant,
+                                       stack_name=stack_identity.stack_name,
+                                       stack_id=stack_identity.stack_id,
+                                       resource_name=res_name)
+        self.assertEqual(403, resp.status_int)
+        self.assertIn('403 Forbidden', str(resp))
+
+    def test_metadata_show(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'metadata', True)
         res_name = 'WikiDatabase'
         stack_identity = identifier.HeatIdentifier(self.tenant,
                                                    'wordpress', '6')
@@ -1589,7 +2021,8 @@ class ResourceControllerTest(ControllerTest, HeatTestCase):
         self.assertEqual(result, expected)
         self.m.VerifyAll()
 
-    def test_metadata_show_nonexist(self):
+    def test_metadata_show_nonexist(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'metadata', True)
         res_name = 'WikiDatabase'
         stack_identity = identifier.HeatIdentifier(self.tenant,
                                                    'rubbish', '1')
@@ -1620,7 +2053,8 @@ class ResourceControllerTest(ControllerTest, HeatTestCase):
         self.assertEqual(resp.json['error']['type'], 'StackNotFound')
         self.m.VerifyAll()
 
-    def test_metadata_show_nonexist_resource(self):
+    def test_metadata_show_nonexist_resource(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'metadata', True)
         res_name = 'wibble'
         stack_identity = identifier.HeatIdentifier(self.tenant,
                                                    'wordpress', '1')
@@ -1651,7 +2085,27 @@ class ResourceControllerTest(ControllerTest, HeatTestCase):
         self.assertEqual(resp.json['error']['type'], 'ResourceNotFound')
         self.m.VerifyAll()
 
+    def test_metadata_show_err_denied_policy(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'metadata', False)
+        res_name = 'wibble'
+        stack_identity = identifier.HeatIdentifier(self.tenant,
+                                                   'wordpress', '1')
+        res_identity = identifier.ResourceIdentifier(resource_name=res_name,
+                                                     **stack_identity)
 
+        req = self._get(res_identity._tenant_path() + '/metadata')
+
+        resp = request_with_middleware(fault.FaultWrapper,
+                                       self.controller.metadata,
+                                       req, tenant_id=self.tenant,
+                                       stack_name=stack_identity.stack_name,
+                                       stack_id=stack_identity.stack_id,
+                                       resource_name=res_name)
+        self.assertEqual(403, resp.status_int)
+        self.assertIn('403 Forbidden', str(resp))
+
+
+@mock.patch.object(policy.Enforcer, 'enforce')
 class EventControllerTest(ControllerTest, HeatTestCase):
     '''
     Tests the API class which acts as the WSGI controller,
@@ -1668,8 +2122,15 @@ class EventControllerTest(ControllerTest, HeatTestCase):
         cfgopts = DummyConfig()
         self.controller = events.EventController(options=cfgopts)
 
-    def test_resource_index(self):
-        event_id = '42'
+    def test_resource_index_event_id_integer(self, mock_enforce):
+        self._test_resource_index('42', mock_enforce)
+
+    def test_resource_index_event_id_uuid(self, mock_enforce):
+        self._test_resource_index('a3455d8c-9f88-404d-a85b-5315293e67de',
+                                  mock_enforce)
+
+    def _test_resource_index(self, event_id, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'index', True)
         res_name = 'WikiDatabase'
         stack_identity = identifier.HeatIdentifier(self.tenant,
                                                    'wordpress', '6')
@@ -1746,8 +2207,15 @@ class EventControllerTest(ControllerTest, HeatTestCase):
         self.assertEqual(result, expected)
         self.m.VerifyAll()
 
-    def test_stack_index(self):
-        event_id = '42'
+    def test_stack_index_event_id_integer(self, mock_enforce):
+        self._test_stack_index('42', mock_enforce)
+
+    def test_stack_index_event_id_uuid(self, mock_enforce):
+        self._test_stack_index('a3455d8c-9f88-404d-a85b-5315293e67de',
+                               mock_enforce)
+
+    def _test_stack_index(self, event_id, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'index', True)
         res_name = 'WikiDatabase'
         stack_identity = identifier.HeatIdentifier(self.tenant,
                                                    'wordpress', '6')
@@ -1808,7 +2276,8 @@ class EventControllerTest(ControllerTest, HeatTestCase):
         self.assertEqual(result, expected)
         self.m.VerifyAll()
 
-    def test_index_stack_nonexist(self):
+    def test_index_stack_nonexist(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'index', True)
         stack_identity = identifier.HeatIdentifier(self.tenant,
                                                    'wibble', '6')
 
@@ -1834,7 +2303,23 @@ class EventControllerTest(ControllerTest, HeatTestCase):
         self.assertEqual(resp.json['error']['type'], 'StackNotFound')
         self.m.VerifyAll()
 
-    def test_index_resource_nonexist(self):
+    def test_index_err_denied_policy(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'index', False)
+        stack_identity = identifier.HeatIdentifier(self.tenant,
+                                                   'wibble', '6')
+
+        req = self._get(stack_identity._tenant_path() + '/events')
+
+        resp = request_with_middleware(fault.FaultWrapper,
+                                       self.controller.index,
+                                       req, tenant_id=self.tenant,
+                                       stack_name=stack_identity.stack_name,
+                                       stack_id=stack_identity.stack_id)
+        self.assertEqual(403, resp.status_int)
+        self.assertIn('403 Forbidden', str(resp))
+
+    def test_index_resource_nonexist(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'index', True)
         event_id = '42'
         res_name = 'WikiDatabase'
         stack_identity = identifier.HeatIdentifier(self.tenant,
@@ -1879,8 +2364,14 @@ class EventControllerTest(ControllerTest, HeatTestCase):
                           resource_name=res_name)
         self.m.VerifyAll()
 
-    def test_show(self):
-        event_id = '42'
+    def test_show_event_id_integer(self, mock_enforce):
+        self._test_show('42', mock_enforce)
+
+    def test_show_event_id_uuid(self, mock_enforce):
+        self._test_show('a3455d8c-9f88-404d-a85b-5315293e67de', mock_enforce)
+
+    def _test_show(self, event_id, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'show', True)
         res_name = 'WikiDatabase'
         stack_identity = identifier.HeatIdentifier(self.tenant,
                                                    'wordpress', '6')
@@ -1961,14 +2452,22 @@ class EventControllerTest(ControllerTest, HeatTestCase):
         self.assertEqual(result, expected)
         self.m.VerifyAll()
 
-    def test_show_nonexist(self):
-        event_id = '42'
+    def test_show_nonexist_event_id_integer(self, mock_enforce):
+        self._test_show_nonexist('42', '41', mock_enforce)
+
+    def test_show_nonexist_event_id_uuid(self, mock_enforce):
+        self._test_show_nonexist('a3455d8c-9f88-404d-a85b-5315293e67de',
+                                 'x3455x8x-9x88-404x-x85x-5315293x67xx',
+                                 mock_enforce)
+
+    def _test_show_nonexist(self, event_id, search_event_id, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'show', True)
         res_name = 'WikiDatabase'
         stack_identity = identifier.HeatIdentifier(self.tenant,
                                                    'wordpress', '6')
         res_identity = identifier.ResourceIdentifier(resource_name=res_name,
                                                      **stack_identity)
-        ev_identity = identifier.EventIdentifier(event_id='41',
+        ev_identity = identifier.EventIdentifier(event_id=search_event_id,
                                                  **res_identity)
 
         req = self._get(stack_identity._tenant_path() +
@@ -2006,7 +2505,8 @@ class EventControllerTest(ControllerTest, HeatTestCase):
                           resource_name=res_name, event_id=event_id)
         self.m.VerifyAll()
 
-    def test_show_bad_resource(self):
+    def test_show_bad_resource(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'show', True)
         event_id = '42'
         res_name = 'WikiDatabase'
         stack_identity = identifier.HeatIdentifier(self.tenant,
@@ -2051,7 +2551,8 @@ class EventControllerTest(ControllerTest, HeatTestCase):
                           resource_name=res_name, event_id=event_id)
         self.m.VerifyAll()
 
-    def test_show_stack_nonexist(self):
+    def test_show_stack_nonexist(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'show', True)
         event_id = '42'
         res_name = 'WikiDatabase'
         stack_identity = identifier.HeatIdentifier(self.tenant,
@@ -2081,6 +2582,26 @@ class EventControllerTest(ControllerTest, HeatTestCase):
         self.assertEqual(resp.json['code'], 404)
         self.assertEqual(resp.json['error']['type'], 'StackNotFound')
         self.m.VerifyAll()
+
+    def test_show_err_denied_policy(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'show', False)
+        event_id = '42'
+        res_name = 'WikiDatabase'
+        stack_identity = identifier.HeatIdentifier(self.tenant,
+                                                   'wibble', '6')
+
+        req = self._get(stack_identity._tenant_path() +
+                        '/resources/' + res_name + '/events/' + event_id)
+
+        resp = request_with_middleware(fault.FaultWrapper,
+                                       self.controller.show,
+                                       req, tenant_id=self.tenant,
+                                       stack_name=stack_identity.stack_name,
+                                       stack_id=stack_identity.stack_id,
+                                       resource_name=res_name,
+                                       event_id=event_id)
+        self.assertEqual(403, resp.status_int)
+        self.assertIn('403 Forbidden', str(resp))
 
 
 class RoutesTest(HeatTestCase):
@@ -2379,7 +2900,18 @@ class RoutesTest(HeatTestCase):
                 'event_id': 'dddd'
             })
 
+    def test_build_info(self):
+        self.assertRoute(
+            self.m,
+            '/fake_tenant/build_info',
+            'GET',
+            'build_info',
+            'BuildInfoController',
+            {'tenant_id': 'fake_tenant'}
+        )
 
+
+@mock.patch.object(policy.Enforcer, 'enforce')
 class ActionControllerTest(ControllerTest, HeatTestCase):
     '''
     Tests the API class which acts as the WSGI controller,
@@ -2396,7 +2928,8 @@ class ActionControllerTest(ControllerTest, HeatTestCase):
         cfgopts = DummyConfig()
         self.controller = actions.ActionController(options=cfgopts)
 
-    def test_action_suspend(self):
+    def test_action_suspend(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'action', True)
         res_name = 'WikiDatabase'
         stack_identity = identifier.HeatIdentifier(self.tenant,
                                                    'wordpress', '1')
@@ -2417,10 +2950,11 @@ class ActionControllerTest(ControllerTest, HeatTestCase):
                                         stack_name=stack_identity.stack_name,
                                         stack_id=stack_identity.stack_id,
                                         body=body)
-        self.assertEqual(result, None)
+        self.assertIsNone(result)
         self.m.VerifyAll()
 
-    def test_action_resume(self):
+    def test_action_resume(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'action', True)
         res_name = 'WikiDatabase'
         stack_identity = identifier.HeatIdentifier(self.tenant,
                                                    'wordpress', '1')
@@ -2441,10 +2975,11 @@ class ActionControllerTest(ControllerTest, HeatTestCase):
                                         stack_name=stack_identity.stack_name,
                                         stack_id=stack_identity.stack_id,
                                         body=body)
-        self.assertEqual(result, None)
+        self.assertIsNone(result)
         self.m.VerifyAll()
 
-    def test_action_badaction(self):
+    def test_action_badaction(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'action', True)
         res_name = 'WikiDatabase'
         stack_identity = identifier.HeatIdentifier(self.tenant,
                                                    'wordpress', '1')
@@ -2461,7 +2996,8 @@ class ActionControllerTest(ControllerTest, HeatTestCase):
                           body=body)
         self.m.VerifyAll()
 
-    def test_action_badaction_empty(self):
+    def test_action_badaction_empty(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'action', True)
         res_name = 'WikiDatabase'
         stack_identity = identifier.HeatIdentifier(self.tenant,
                                                    'wordpress', '1')
@@ -2478,7 +3014,8 @@ class ActionControllerTest(ControllerTest, HeatTestCase):
                           body=body)
         self.m.VerifyAll()
 
-    def test_action_badaction_multiple(self):
+    def test_action_badaction_multiple(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'action', True)
         res_name = 'WikiDatabase'
         stack_identity = identifier.HeatIdentifier(self.tenant,
                                                    'wordpress', '1')
@@ -2495,7 +3032,8 @@ class ActionControllerTest(ControllerTest, HeatTestCase):
                           body=body)
         self.m.VerifyAll()
 
-    def test_action_rmt_aterr(self):
+    def test_action_rmt_aterr(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'action', True)
         res_name = 'WikiDatabase'
         stack_identity = identifier.HeatIdentifier(self.tenant,
                                                    'wordpress', '1')
@@ -2523,7 +3061,26 @@ class ActionControllerTest(ControllerTest, HeatTestCase):
         self.assertEqual(resp.json['error']['type'], 'AttributeError')
         self.m.VerifyAll()
 
-    def test_action_badaction_ise(self):
+    def test_action_err_denied_policy(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'action', False)
+        res_name = 'WikiDatabase'
+        stack_identity = identifier.HeatIdentifier(self.tenant,
+                                                   'wordpress', '1')
+        body = {'suspend': None}
+        req = self._post(stack_identity._tenant_path() + '/actions',
+                         data=json.dumps(body))
+
+        resp = request_with_middleware(fault.FaultWrapper,
+                                       self.controller.action,
+                                       req, tenant_id=self.tenant,
+                                       stack_name=stack_identity.stack_name,
+                                       stack_id=stack_identity.stack_id,
+                                       body=body)
+        self.assertEqual(403, resp.status_int)
+        self.assertIn('403 Forbidden', str(resp))
+
+    def test_action_badaction_ise(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'action', True)
         res_name = 'WikiDatabase'
         stack_identity = identifier.HeatIdentifier(self.tenant,
                                                    'wordpress', '1')
@@ -2542,3 +3099,56 @@ class ActionControllerTest(ControllerTest, HeatTestCase):
                           stack_id=stack_identity.stack_id,
                           body=body)
         self.m.VerifyAll()
+
+
+@mock.patch.object(policy.Enforcer, 'enforce')
+class BuildInfoControllerTest(ControllerTest, HeatTestCase):
+
+    def setUp(self):
+        super(BuildInfoControllerTest, self).setUp()
+        self.controller = build_info.BuildInfoController({})
+
+    def test_theres_a_default_api_build_revision(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'build_info', True)
+        req = self._get('/build_info')
+        self.controller.engine = mock.Mock()
+
+        response = self.controller.build_info(req, tenant_id=self.tenant)
+        self.assertIn('api', response)
+        self.assertIn('revision', response['api'])
+        self.assertEqual('unknown', response['api']['revision'])
+
+    @mock.patch.object(build_info.cfg, 'CONF')
+    def test_response_api_build_revision_from_config_file(
+            self, mock_conf, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'build_info', True)
+        req = self._get('/build_info')
+        mock_engine = mock.Mock()
+        mock_engine.get_revision.return_value = 'engine_revision'
+        self.controller.engine = mock_engine
+        mock_conf.revision = {'heat_revision': 'test'}
+
+        response = self.controller.build_info(req, tenant_id=self.tenant)
+        self.assertEqual('test', response['api']['revision'])
+
+    def test_retrieves_build_revision_from_the_engine(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'build_info', True)
+        req = self._get('/build_info')
+        mock_engine = mock.Mock()
+        mock_engine.get_revision.return_value = 'engine_revision'
+        self.controller.engine = mock_engine
+
+        response = self.controller.build_info(req, tenant_id=self.tenant)
+        self.assertIn('engine', response)
+        self.assertIn('revision', response['engine'])
+        self.assertEqual('engine_revision', response['engine']['revision'])
+
+    def test_build_info_err_denied_policy(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'build_info', False)
+        req = self._get('/build_info')
+
+        resp = request_with_middleware(fault.FaultWrapper,
+                                       self.controller.build_info,
+                                       req, tenant_id=self.tenant)
+        self.assertEqual(403, resp.status_int)
+        self.assertIn('403 Forbidden', str(resp))

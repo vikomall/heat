@@ -17,10 +17,10 @@
 Stack endpoint for Heat v1 ReST API.
 """
 
-import itertools
 from webob import exc
 
 from heat.api.openstack.v1 import util
+from heat.api.openstack.v1.views import stacks_view
 from heat.common import identifier
 from heat.common import wsgi
 from heat.common import template_format
@@ -137,39 +137,13 @@ class InstantiationData(object):
         return dict((k, v) for k, v in params if k not in self.PARAMS)
 
 
-def format_stack(req, stack, keys=[]):
-    include_key = lambda k: k in keys if keys else True
-
-    def transform(key, value):
-        if not include_key(key):
-            return
-
-        if key == engine_api.STACK_ID:
-            yield ('id', value['stack_id'])
-            yield ('links', [util.make_link(req, value)])
-        elif key == engine_api.STACK_ACTION:
-            return
-        elif (key == engine_api.STACK_STATUS and
-              engine_api.STACK_ACTION in stack):
-            # To avoid breaking API compatibility, we join RES_ACTION
-            # and RES_STATUS, so the API format doesn't expose the
-            # internal split of state into action/status
-            yield (key, '_'.join((stack[engine_api.STACK_ACTION], value)))
-        else:
-            # TODO(zaneb): ensure parameters can be formatted for XML
-            #elif key == engine_api.STACK_PARAMETERS:
-            #    return key, json.dumps(value)
-            yield (key, value)
-
-    return dict(itertools.chain.from_iterable(
-        transform(k, v) for k, v in stack.items()))
-
-
 class StackController(object):
     """
     WSGI controller for stacks resource in Heat v1 API
     Implements the API actions
     """
+    # Define request scope (must match what is in policy.json)
+    REQUEST_SCOPE = 'stacks'
 
     def __init__(self, options):
         self.options = options
@@ -178,40 +152,54 @@ class StackController(object):
     def default(self, req, **args):
         raise exc.HTTPNotFound()
 
-    @util.tenant_local
+    @util.policy_enforce
     def index(self, req):
         """
         Lists summary information for all stacks
         """
+        filter_whitelist = {
+            'status': 'mixed',
+            'name': 'mixed',
+        }
+        whitelist = {
+            'limit': 'single',
+            'marker': 'single',
+            'sort_dir': 'single',
+            'sort_keys': 'multi',
+        }
+        params = util.get_allowed_params(req.params, whitelist)
+        filter_params = util.get_allowed_params(req.params, filter_whitelist)
 
-        stacks = self.engine.list_stacks(req.context)
+        stacks = self.engine.list_stacks(req.context,
+                                         filters=filter_params,
+                                         **params)
 
-        summary_keys = (engine_api.STACK_ID,
-                        engine_api.STACK_NAME,
-                        engine_api.STACK_DESCRIPTION,
-                        engine_api.STACK_STATUS,
-                        engine_api.STACK_STATUS_DATA,
-                        engine_api.STACK_CREATION_TIME,
-                        engine_api.STACK_DELETION_TIME,
-                        engine_api.STACK_UPDATED_TIME)
+        count = None
+        if req.params.get('with_count'):
+            try:
+                # Check if engine has been updated to a version with
+                # support to count_stacks before trying to use it.
+                count = self.engine.count_stacks(req.context,
+                                                 filters=filter_params)
+            except AttributeError as exc:
+                logger.warning("Old Engine Version: %s" % str(exc))
 
-        return {'stacks': [format_stack(req, s, summary_keys) for s in stacks]}
+        return stacks_view.collection(req, stacks=stacks, count=count)
 
-    @util.tenant_local
+    @util.policy_enforce
     def detail(self, req):
         """
         Lists detailed information for all stacks
         """
         stacks = self.engine.list_stacks(req.context)
 
-        return {'stacks': [format_stack(req, s) for s in stacks]}
+        return {'stacks': [stacks_view.format_stack(req, s) for s in stacks]}
 
-    @util.tenant_local
+    @util.policy_enforce
     def create(self, req, body):
         """
         Create a new stack
         """
-
         data = InstantiationData(body)
 
         result = self.engine.create_stack(req.context,
@@ -221,9 +209,13 @@ class StackController(object):
                                           data.files(),
                                           data.args())
 
-        return {'stack': format_stack(req, {engine_api.STACK_ID: result})}
+        formatted_stack = stacks_view.format_stack(
+            req,
+            {engine_api.STACK_ID: result}
+        )
+        return {'stack': formatted_stack}
 
-    @util.tenant_local
+    @util.policy_enforce
     def lookup(self, req, stack_name, path='', body=None):
         """
         Redirect to the canonical URL for a stack
@@ -254,7 +246,7 @@ class StackController(object):
 
         stack = stack_list[0]
 
-        return {'stack': format_stack(req, stack)}
+        return {'stack': stacks_view.format_stack(req, stack)}
 
     @util.identified_stack
     def template(self, req, identity):
@@ -302,7 +294,16 @@ class StackController(object):
 
         raise exc.HTTPNoContent()
 
-    @util.tenant_local
+    @util.identified_stack
+    def abandon(self, req, identity):
+        """
+        Abandons specified stack by deleting the stack and it's resources
+        from the database, but underlying resources will not be deleted.
+        """
+        return self.engine.abandon_stack(req.context,
+                                         identity)
+
+    @util.policy_enforce
     def validate_template(self, req, body):
         """
         Implements the ValidateTemplate API action
@@ -319,21 +320,24 @@ class StackController(object):
 
         return result
 
-    @util.tenant_local
+    @util.policy_enforce
     def list_resource_types(self, req):
         """
         Returns a list of valid resource types that may be used in a template.
         """
-        return {'resource_types': self.engine.list_resource_types(req.context)}
+        support_status = req.params.get('support_status', None)
+        return {
+            'resource_types':
+            self.engine.list_resource_types(req.context, support_status)}
 
-    @util.tenant_local
+    @util.policy_enforce
     def resource_schema(self, req, type_name):
         """
         Returns the schema of the given resource type.
         """
         return self.engine.resource_schema(req.context, type_name)
 
-    @util.tenant_local
+    @util.policy_enforce
     def generate_template(self, req, type_name):
         """
         Generates a template based on the specified type.

@@ -34,10 +34,12 @@ from heat.openstack.common.gettextutils import _
 
 logger = logging.getLogger(__name__)
 
+DELETION_POLICY = (DELETE, RETAIN, SNAPSHOT) = ('Delete', 'Retain', 'Snapshot')
 
-def get_types():
-    '''Return an iterator over the list of valid resource types.'''
-    return iter(resources.global_env().get_types())
+
+def get_types(support_status):
+    '''Return a list of valid resource types.'''
+    return resources.global_env().get_types(support_status)
 
 
 def get_class(resource_type, resource_name=None):
@@ -88,6 +90,29 @@ class Metadata(object):
         rs.update_and_save({'rsrc_metadata': metadata})
 
 
+class SupportStatus(object):
+    SUPPORT_STATUSES = (UNKNOWN, SUPPORTED, PROTOTYPE, DEPRECATED,
+                        UNSUPPORTED) = ('UNKNOWN', 'SUPPORTED', 'PROTOTYPE',
+                                        'DEPRECATED', 'UNSUPPORTED')
+
+    def __init__(self, status=SUPPORTED, message=None, version=None):
+        if status in self.SUPPORT_STATUSES:
+            self.status = status
+            self.message = message
+            self.version = version
+        else:
+            self.status = self.UNKNOWN
+            self.message = _("Specified status is invalid, defaulting to"
+                             " %s") % self.UNKNOWN
+
+            self.version = None
+
+    def to_dict(self):
+            return {'status': self.status,
+                    'message': self.message,
+                    'version': self.version}
+
+
 class Resource(object):
     ACTIONS = (INIT, CREATE, DELETE, UPDATE, ROLLBACK, SUSPEND, RESUME
                ) = ('INIT', 'CREATE', 'DELETE', 'UPDATE', 'ROLLBACK',
@@ -102,7 +127,7 @@ class Resource(object):
     created_time = timestamp.Timestamp(db_api.resource_get, 'created_at')
     updated_time = timestamp.Timestamp(db_api.resource_get, 'updated_at')
 
-    metadata = Metadata()
+    _metadata = Metadata()
 
     # Resource implementation set this to the subset of template keys
     # which are supported for handle_update, used by update_template_diff
@@ -124,6 +149,8 @@ class Resource(object):
     # If set to None no limit will be applied.
     physical_resource_name_limit = 255
 
+    support_status = SupportStatus()
+
     def __new__(cls, name, json, stack):
         '''Create a new Resource of the appropriate class for its type.'''
 
@@ -132,7 +159,7 @@ class Resource(object):
             return super(Resource, cls).__new__(cls)
 
         # Select the correct subclass to instantiate
-        ResourceClass = stack.env.get_class(json['Type'],
+        ResourceClass = stack.env.get_class(json.get('Type'),
                                             resource_name=name)
         return ResourceClass(name, json, stack)
 
@@ -190,6 +217,14 @@ class Resource(object):
             return result
         return not result
 
+    @property
+    def metadata(self):
+        return self._metadata
+
+    @metadata.setter
+    def metadata(self, metadata):
+        self._metadata = metadata
+
     def type(self):
         return self.t['Type']
 
@@ -242,7 +277,6 @@ class Resource(object):
                                 if before.get(k) != after.get(k)])
 
         if not changed_keys_set.issubset(update_allowed_set):
-            badkeys = changed_keys_set - update_allowed_set
             raise UpdateReplace(self.name)
 
         return dict((k, after.get(k)) for k in changed_keys_set)
@@ -336,8 +370,14 @@ class Resource(object):
     def cinder(self):
         return self.stack.clients.cinder()
 
+    def trove(self):
+        return self.stack.clients.trove()
+
     def ceilometer(self):
         return self.stack.clients.ceilometer()
+
+    def heat(self):
+        return self.stack.clients.heat()
 
     def _do_action(self, action, pre_func=None):
         '''
@@ -384,7 +424,7 @@ class Resource(object):
                     self.state_set(action, self.FAILED,
                                    '%s aborted' % action)
                 except Exception:
-                    logger.exception('Error marking resource as failed')
+                    logger.exception(_('Error marking resource as failed'))
         else:
             self.state_set(action, self.COMPLETE)
 
@@ -395,7 +435,7 @@ class Resource(object):
         '''
         action = self.CREATE
         if (self.action, self.status) != (self.INIT, self.COMPLETE):
-            exc = exception.Error('State %s invalid for create'
+            exc = exception.Error(_('State %s invalid for create')
                                   % str(self.state))
             raise exception.ResourceFailure(exc, self, action)
 
@@ -412,6 +452,21 @@ class Resource(object):
                                      self.name)
         return self._do_action(action, self.properties.validate)
 
+    def set_deletion_policy(self, policy):
+        self.t['DeletionPolicy'] = policy
+
+    def get_abandon_data(self):
+        return {
+            'name': self.name,
+            'resource_id': self.resource_id,
+            'type': self.type(),
+            'action': self.action,
+            'status': self.status,
+            'metadata': self.metadata,
+            'resource_data': dict((r.key, r.value)
+                                  for r in db_api.resource_data_get_all(self))
+        }
+
     def update(self, after, before=None):
         '''
         update the resource. Subclasses should provide a handle_update() method
@@ -421,10 +476,12 @@ class Resource(object):
 
         if before is None:
             before = self.parsed_template()
+        elif before == after:
+            return
 
         if (self.action, self.status) in ((self.CREATE, self.IN_PROGRESS),
                                           (self.UPDATE, self.IN_PROGRESS)):
-            exc = Exception('Resource update already requested')
+            exc = Exception(_('Resource update already requested'))
             raise exception.ResourceFailure(exc, self, action)
 
         logger.info('updating %s' % str(self))
@@ -445,8 +502,9 @@ class Resource(object):
                     while not self.check_update_complete(handle_data):
                         yield
         except UpdateReplace:
-            logger.debug("Resource %s update requires replacement" % self.name)
-            raise
+            with excutils.save_and_reraise_exception():
+                logger.debug(_("Resource %s update requires replacement") %
+                             self.name)
         except Exception as ex:
             logger.exception('update %s : %s' % (str(self), str(ex)))
             failure = exception.ResourceFailure(ex, self, action)
@@ -465,11 +523,11 @@ class Resource(object):
 
         # Don't try to suspend the resource unless it's in a stable state
         if (self.action == self.DELETE or self.status != self.COMPLETE):
-            exc = exception.Error('State %s invalid for suspend'
+            exc = exception.Error(_('State %s invalid for suspend')
                                   % str(self.state))
             raise exception.ResourceFailure(exc, self, action)
 
-        logger.info('suspending %s' % str(self))
+        logger.info(_('suspending %s') % str(self))
         return self._do_action(action)
 
     def resume(self):
@@ -481,11 +539,11 @@ class Resource(object):
 
         # Can't resume a resource unless it's SUSPEND_COMPLETE
         if self.state != (self.SUSPEND, self.COMPLETE):
-            exc = exception.Error('State %s invalid for resume'
+            exc = exception.Error(_('State %s invalid for resume')
                                   % str(self.state))
             raise exception.ResourceFailure(exc, self, action)
 
-        logger.info('resuming %s' % str(self))
+        logger.info(_('resuming %s') % str(self))
         return self._do_action(action)
 
     def physical_resource_name(self):
@@ -507,12 +565,14 @@ class Resource(object):
         Reduce length of physical resource name to a limit.
 
         The reduced name will consist of the following:
+
         * the first 2 characters of the name
         * a hyphen
         * the end of the name, truncated on the left to bring
           the name length within the limit
+
         :param name: The name to reduce the length of
-        :param limit:
+        :param limit: The max length limit
         :returns: A name whose length is less than or equal to the limit
         '''
         if len(name) <= limit:
@@ -525,20 +585,20 @@ class Resource(object):
         return name[0:2] + '-' + name[-postfix_length:]
 
     def validate(self):
-        logger.info('Validating %s' % str(self))
+        logger.info(_('Validating %s') % str(self))
 
         self.validate_deletion_policy(self.t)
         return self.properties.validate()
 
     @classmethod
     def validate_deletion_policy(cls, template):
-        deletion_policy = template.get('DeletionPolicy', 'Delete')
-        if deletion_policy not in ('Delete', 'Retain', 'Snapshot'):
-            msg = 'Invalid DeletionPolicy %s' % deletion_policy
+        deletion_policy = template.get('DeletionPolicy', DELETE)
+        if deletion_policy not in DELETION_POLICY:
+            msg = _('Invalid DeletionPolicy %s') % deletion_policy
             raise exception.StackValidationFailed(message=msg)
-        elif deletion_policy == 'Snapshot':
+        elif deletion_policy == SNAPSHOT:
             if not callable(getattr(cls, 'handle_snapshot_delete', None)):
-                msg = 'Snapshot DeletionPolicy not supported'
+                msg = _('Snapshot DeletionPolicy not supported')
                 raise exception.StackValidationFailed(message=msg)
 
     def delete(self):
@@ -556,29 +616,29 @@ class Resource(object):
 
         initial_state = self.state
 
-        logger.info('deleting %s' % str(self))
+        logger.info(_('deleting %s') % str(self))
 
         try:
             self.state_set(action, self.IN_PROGRESS)
 
-            deletion_policy = self.t.get('DeletionPolicy', 'Delete')
+            deletion_policy = self.t.get('DeletionPolicy', DELETE)
             handle_data = None
-            if deletion_policy == 'Delete':
+            if deletion_policy == DELETE:
                 if callable(getattr(self, 'handle_delete', None)):
                     handle_data = self.handle_delete()
                     yield
-            elif deletion_policy == 'Snapshot':
+            elif deletion_policy == SNAPSHOT:
                 if callable(getattr(self, 'handle_snapshot_delete', None)):
                     handle_data = self.handle_snapshot_delete(initial_state)
                     yield
 
-            if (deletion_policy != 'Retain' and
+            if (deletion_policy != RETAIN and
                     callable(getattr(self, 'check_delete_complete', None))):
                 while not self.check_delete_complete(handle_data):
                     yield
 
         except Exception as ex:
-            logger.exception('Delete %s', str(self))
+            logger.exception(_('Delete %s'), str(self))
             failure = exception.ResourceFailure(ex, self, self.action)
             self.state_set(action, self.FAILED, str(failure))
             raise failure
@@ -588,7 +648,8 @@ class Resource(object):
                     self.state_set(action, self.FAILED,
                                    'Deletion aborted')
                 except Exception:
-                    logger.exception('Error marking resource deletion failed')
+                    logger.exception(_('Error marking resource deletion '
+                                     'failed'))
         else:
             self.state_set(action, self.COMPLETE)
 
@@ -618,7 +679,7 @@ class Resource(object):
                 rs = db_api.resource_get(self.context, self.id)
                 rs.update_and_save({'nova_instance': self.resource_id})
             except Exception as ex:
-                logger.warn('db error %s' % str(ex))
+                logger.warn(_('db error %s') % str(ex))
 
     def _store(self):
         '''Create the resource in the database.'''
@@ -639,7 +700,7 @@ class Resource(object):
             self.stack.updated_time = datetime.utcnow()
 
         except Exception as ex:
-            logger.error('DB error %s' % str(ex))
+            logger.error(_('DB error %s') % str(ex))
 
     def _add_event(self, action, status, reason):
         '''Add a state change event to the database.'''
@@ -650,7 +711,7 @@ class Resource(object):
         try:
             ev.store()
         except Exception as ex:
-            logger.error('DB error %s' % str(ex))
+            logger.error(_('DB error %s') % str(ex))
 
     def _store_or_update(self, action, status, reason):
         self.action = action
@@ -668,7 +729,7 @@ class Resource(object):
 
                 self.stack.updated_time = datetime.utcnow()
             except Exception as ex:
-                logger.error('DB error %s' % str(ex))
+                logger.error(_('DB error %s') % str(ex))
 
         # store resource in DB on transition to CREATE_IN_PROGRESS
         # all other transistions (other than to DELETE_COMPLETE)
@@ -696,10 +757,10 @@ class Resource(object):
 
     def state_set(self, action, status, reason="state changed"):
         if action not in self.ACTIONS:
-            raise ValueError("Invalid action %s" % action)
+            raise ValueError(_("Invalid action %s") % action)
 
         if status not in self.STATUSES:
-            raise ValueError("Invalid status %s" % status)
+            raise ValueError(_("Invalid status %s") % status)
 
         old_state = (self.action, self.status)
         new_state = (action, status)
@@ -715,8 +776,9 @@ class Resource(object):
 
     def FnGetRefId(self):
         '''
-        http://docs.amazonwebservices.com/AWSCloudFormation/latest/UserGuide/\
-        intrinsic-function-reference-ref.html
+        For the intrinsic function Ref.
+
+        :results: the id or name of the resource.
         '''
         if self.resource_id is not None:
             return unicode(self.resource_id)
@@ -725,8 +787,10 @@ class Resource(object):
 
     def FnGetAtt(self, key):
         '''
-        http://docs.amazonwebservices.com/AWSCloudFormation/latest/UserGuide/\
-        intrinsic-function-reference-getatt.html
+        For the intrinsic function Fn::GetAtt.
+
+        :param key: the attribute key.
+        :returns: the attribute value.
         '''
         try:
             return self.attributes[key]
@@ -736,8 +800,10 @@ class Resource(object):
 
     def FnBase64(self, data):
         '''
-        http://docs.amazonwebservices.com/AWSCloudFormation/latest/UserGuide/\
-            intrinsic-function-reference-base64.html
+        For the instrinsic function Fn::Base64.
+
+        :param data: the input data.
+        :returns: the Base64 representation of the input data.
         '''
         return base64.b64encode(data)
 
@@ -766,17 +832,19 @@ class Resource(object):
 
         try:
             if self.action in (self.SUSPEND, self.DELETE):
-                msg = 'Cannot signal resource during %s' % self.action
+                msg = _('Cannot signal resource during %s') % self.action
                 raise Exception(msg)
 
             if not callable(getattr(self, 'handle_signal', None)):
-                msg = 'Resource %s is not able to receive a signal' % str(self)
+                msg = (_('Resource %s is not able to receive a signal') %
+                       str(self))
                 raise Exception(msg)
 
             self._add_event('signal', self.status, get_string_details())
             self.handle_signal(details)
         except Exception as ex:
-            logger.exception('signal %s : %s' % (str(self), str(ex)))
+            logger.exception(_('signal %(name)s : %(msg)s') %
+                             {'name': str(self), 'msg': str(ex)})
             failure = exception.ResourceFailure(ex, self)
             raise failure
 
@@ -788,15 +856,13 @@ class Resource(object):
         No-op for resources which don't explicitly override this method
         '''
         if new_metadata:
-            logger.warning("Resource %s does not implement metadata update" %
-                           self.name)
+            logger.warning(_("Resource %s does not implement metadata update")
+                           % self.name)
 
     @classmethod
     def resource_to_template(cls, resource_type):
         '''
         :param resource_type: The resource type to be displayed in the template
-        :param explode_nested: True if a resource's nested properties schema
-            should be resolved.
         :returns: A template where the resource's properties_schema is mapped
             as parameters, and the resource's attributes_schema is mapped as
             outputs

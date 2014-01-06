@@ -14,8 +14,10 @@
 #    under the License.
 
 import collections
+import copy
 import functools
 import re
+import six
 
 from oslo.config import cfg
 
@@ -37,6 +39,7 @@ from heat.db import api as db_api
 
 from heat.openstack.common import log as logging
 from heat.openstack.common.gettextutils import _
+from heat.openstack.common import strutils
 
 from heat.common.exception import StackValidationFailed
 
@@ -161,7 +164,7 @@ class Stack(collections.Mapping):
         try:
             stack_arn = self.identifier().arn()
         except (AttributeError, ValueError, TypeError):
-            logger.warning("Unable to set parameters StackId identifier")
+            logger.warning(_("Unable to set parameters StackId identifier"))
         else:
             self.parameters.set_stack_id(stack_arn)
 
@@ -297,8 +300,7 @@ class Stack(collections.Mapping):
 
     def validate(self):
         '''
-        http://docs.amazonwebservices.com/AWSCloudFormation/latest/\
-        APIReference/API_ValidateTemplate.html
+        Validates the template.
         '''
         # TODO(sdake) Should return line number of invalid reference
 
@@ -306,7 +308,7 @@ class Stack(collections.Mapping):
         dup_names = set(self.parameters.keys()) & set(self.keys())
 
         if dup_names:
-            logger.debug("Duplicate names %s" % dup_names)
+            logger.debug(_("Duplicate names %s") % dup_names)
             raise StackValidationFailed(message=_("Duplicate names %s") %
                                         dup_names)
 
@@ -318,7 +320,8 @@ class Stack(collections.Mapping):
                 raise ex
             except Exception as ex:
                 logger.exception(ex)
-                raise StackValidationFailed(message=str(ex))
+                raise StackValidationFailed(message=strutils.safe_decode(
+                                            six.text_type(ex)))
             if result:
                 raise StackValidationFailed(message=result)
 
@@ -424,16 +427,19 @@ class Stack(collections.Mapping):
         Get a Stack containing any in-progress resources from the previous
         stack state prior to an update.
         '''
-        s = db_api.stack_get_by_name(self.context, self._backup_name(),
-                                     owner_id=self.id)
+        s = db_api.stack_get_by_name_and_owner_id(self.context,
+                                                  self._backup_name(),
+                                                  owner_id=self.id)
         if s is not None:
-            logger.debug('Loaded existing backup stack')
+            logger.debug(_('Loaded existing backup stack'))
             return self.load(self.context, stack=s)
         elif create_if_missing:
-            prev = type(self)(self.context, self.name, self.t, self.env,
+            templ = Template.load(self.context, self.t.id)
+            templ.files = copy.deepcopy(self.t.files)
+            prev = type(self)(self.context, self.name, templ, self.env,
                               owner_id=self.id)
             prev.store(backup=True)
-            logger.debug('Created new backup stack')
+            logger.debug(_('Created new backup stack'))
             return prev
         else:
             return None
@@ -456,7 +462,7 @@ class Stack(collections.Mapping):
     @scheduler.wrappertask
     def update_task(self, newstack, action=UPDATE):
         if action not in (self.UPDATE, self.ROLLBACK):
-            logger.error("Unexpected action %s passed to update!" % action)
+            logger.error(_("Unexpected action %s passed to update!") % action)
             self.state_set(self.UPDATE, self.FAILED,
                            "Invalid action %s" % action)
             return
@@ -464,7 +470,7 @@ class Stack(collections.Mapping):
         if self.status != self.COMPLETE:
             if (action == self.ROLLBACK and
                     self.state == (self.UPDATE, self.IN_PROGRESS)):
-                logger.debug("Starting update rollback for %s" % self.name)
+                logger.debug(_("Starting update rollback for %s") % self.name)
             else:
                 self.state_set(action, self.FAILED,
                                'State invalid for %s' % action)
@@ -475,7 +481,6 @@ class Stack(collections.Mapping):
 
         oldstack = Stack(self.context, self.name, self.t, self.env)
         backup_stack = self._backup_stack()
-
         try:
             update_task = update.StackUpdate(self, newstack, backup_stack,
                                              rollback=action == self.ROLLBACK)
@@ -483,6 +488,8 @@ class Stack(collections.Mapping):
 
             self.env = newstack.env
             self.parameters = newstack.parameters
+            self.t.files = newstack.t.files
+            self._set_param_stackid()
 
             try:
                 updater.start(timeout=self.timeout_secs())
@@ -512,7 +519,7 @@ class Stack(collections.Mapping):
                     yield self.update_task(oldstack, action=self.ROLLBACK)
                     return
         else:
-            logger.debug('Deleting backup stack')
+            logger.debug(_('Deleting backup stack'))
             backup_stack.delete()
 
         self.state_set(action, stack_status, reason)
@@ -535,7 +542,7 @@ class Stack(collections.Mapping):
         differently.
         '''
         if action not in (self.DELETE, self.ROLLBACK):
-            logger.error("Unexpected action %s passed to delete!" % action)
+            logger.error(_("Unexpected action %s passed to delete!") % action)
             self.state_set(self.DELETE, self.FAILED,
                            "Invalid action %s" % action)
             return
@@ -566,14 +573,22 @@ class Stack(collections.Mapping):
             stack_status = self.FAILED
             reason = '%s timed out' % action.title()
 
-        self.state_set(action, stack_status, reason)
         if stack_status != self.FAILED:
             # If we created a trust, delete it
             stack = db_api.stack_get(self.context, self.id)
             user_creds = db_api.user_creds_get(stack.user_creds_id)
             trust_id = user_creds.get('trust_id')
             if trust_id:
-                self.clients.keystone().delete_trust(trust_id)
+                try:
+                    self.clients.keystone().delete_trust(trust_id)
+                except Exception as ex:
+                    logger.exception(ex)
+                    stack_status = self.FAILED
+                    reason = "Error deleting trust: %s" % str(ex)
+
+        self.state_set(action, stack_status, reason)
+
+        if stack_status != self.FAILED:
             # delete the stack
             db_api.stack_delete(self.context, self.id)
             self.id = None
@@ -626,7 +641,7 @@ class Stack(collections.Mapping):
                 scheduler.TaskRunner(res.destroy)()
             except exception.ResourceFailure as ex:
                 failed = True
-                logger.error('delete: %s' % str(ex))
+                logger.error(_('delete: %s') % str(ex))
 
         for res in deps:
             if not failed:
@@ -634,7 +649,7 @@ class Stack(collections.Mapping):
                     res.state_reset()
                     scheduler.TaskRunner(res.create)()
                 except exception.ResourceFailure as ex:
-                    logger.exception('create')
+                    logger.exception(_('create'))
                     failed = True
             else:
                 res.state_set(res.CREATE, res.FAILED,
@@ -648,6 +663,21 @@ class Stack(collections.Mapping):
                 zone.zoneName for zone in
                 self.clients.nova().availability_zones.list(detailed=False)]
         return self._zones
+
+    def set_deletion_policy(self, policy):
+        for res in self.resources.values():
+            res.set_deletion_policy(policy)
+
+    def get_abandon_data(self):
+        return {
+            'name': self.name,
+            'id': self.id,
+            'action': self.action,
+            'status': self.status,
+            'template': self.t.t,
+            'resources': dict((res.name, res.get_abandon_data())
+                              for res in self.resources.values())
+        }
 
     def resolve_static_data(self, snippet):
         return resolve_static_data(self.t, self, self.parameters, snippet)
@@ -699,6 +729,9 @@ def transform(data, transformations):
     Apply each of the transformation functions in the supplied list to the data
     in turn.
     '''
+    def sub_transform(d):
+        return transform(d, transformations)
+
     for t in transformations:
-        data = t(data)
+        data = t(data, transform=sub_transform)
     return data

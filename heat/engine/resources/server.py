@@ -24,6 +24,7 @@ from heat.engine.resources import nova_utils
 from heat.engine import resource
 from heat.openstack.common.gettextutils import _
 from heat.openstack.common import log as logging
+from heat.openstack.common import uuidutils
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +60,11 @@ class Server(resource.Resource):
     networks_schema = {
         'uuid': {
             'Type': 'String',
-            'Description': _('ID of network to create a port on.')},
+            'Description': _('DEPRECATED! ID of network '
+                             'to create a port on.')},
+        'network': {
+            'Type': 'String',
+            'Description': _('Name or ID of network to create a port on.')},
         'fixed_ip': {
             'Type': 'String',
             'Description': _('Fixed IP address to specify for the port '
@@ -73,7 +78,7 @@ class Server(resource.Resource):
     properties_schema = {
         'name': {
             'Type': 'String',
-            'Description': _('Optional server name.')},
+            'Description': _('Server name.')},
         'image': {
             'Type': 'String',
             'Description': _('The ID or name of the image to boot with.'),
@@ -105,7 +110,8 @@ class Server(resource.Resource):
             'Description': _('Policy on how to apply an image-id update; '
                              'either by requesting a server rebuild or by '
                              'replacing the entire server'),
-            'AllowedValues': ['REBUILD', 'REPLACE'],
+            'AllowedValues': ['REBUILD', 'REPLACE',
+                              'REBUILD_PRESERVE_EPHEMERAL'],
             'UpdateAllowed': True},
         'key_name': {
             'Type': 'String',
@@ -121,7 +127,8 @@ class Server(resource.Resource):
                              'placement.')},
         'security_groups': {
             'Type': 'List',
-            'Description': _('List of security group names or IDs.')},
+            'Description': _('List of security group names or IDs.'),
+            'Default': []},
         'networks': {
             'Type': 'List',
             'Description': _('An ordered list of nics to be '
@@ -138,6 +145,7 @@ class Server(resource.Resource):
                              'client to help boot a server.')},
         'metadata': {
             'Type': 'Map',
+            'UpdateAllowed': True,
             'Description': _('Arbitrary key/value metadata to store for this '
                              'server. A maximum of five entries is allowed, '
                              'and both keys and values must be 255 characters '
@@ -154,7 +162,8 @@ class Server(resource.Resource):
         'user_data': {
             'Type': 'String',
             'Description': _('User data script to be executed by '
-                             'cloud-init.')},
+                             'cloud-init.'),
+            'Default': ""},
         'reservation_id': {
             'Type': 'String',
             'Description': _('A UUID for the set of servers being requested.')
@@ -200,13 +209,6 @@ class Server(resource.Resource):
 
     def __init__(self, name, json_snippet, stack):
         super(Server, self).__init__(name, json_snippet, stack)
-        self.mime_string = None
-
-    def get_mime_string(self, userdata):
-        if not self.mime_string:
-            self.mime_string = nova_utils.build_userdata(
-                self, userdata, instance_user=self.properties['admin_user'])
-        return self.mime_string
 
     def physical_resource_name(self):
         name = self.properties.get('name')
@@ -216,14 +218,14 @@ class Server(resource.Resource):
         return super(Server, self).physical_resource_name()
 
     def handle_create(self):
-        security_groups = self.properties.get('security_groups', [])
+        security_groups = self.properties.get('security_groups')
 
         user_data_format = self.properties.get('user_data_format')
-        if user_data_format == 'HEAT_CFNTOOLS':
-            userdata = self.get_mime_string(
-                self.properties.get('user_data', ''))
-        else:
-            userdata = self.properties.get('user_data', '')
+        userdata = nova_utils.build_userdata(
+            self,
+            self.properties.get('user_data'),
+            instance_user=self.properties['admin_user'],
+            user_data_format=user_data_format)
 
         flavor = self.properties['flavor']
         availability_zone = self.properties['availability_zone']
@@ -238,7 +240,12 @@ class Server(resource.Resource):
             image = nova_utils.get_image_id(self.nova(), image)
 
         flavor_id = nova_utils.get_flavor_id(self.nova(), flavor)
+
         instance_meta = self.properties.get('metadata')
+        if instance_meta is not None:
+            instance_meta = dict((key, str(value)) for (key, value) in
+                                 instance_meta.items())
+
         scheduler_hints = self.properties.get('scheduler_hints')
         nics = self._build_nics(self.properties.get('networks'))
         block_device_mapping = self._build_block_device_mapping(
@@ -320,8 +327,7 @@ class Server(resource.Resource):
 
         return bdm_dict
 
-    @staticmethod
-    def _build_nics(networks):
+    def _build_nics(self, networks):
         if not networks:
             return None
 
@@ -331,6 +337,13 @@ class Server(resource.Resource):
             nic_info = {}
             if net_data.get('uuid'):
                 nic_info['net-id'] = net_data['uuid']
+            label_or_uuid = net_data.get('network')
+            if label_or_uuid:
+                if uuidutils.is_uuid_like(label_or_uuid):
+                    nic_info['net-id'] = label_or_uuid
+                else:
+                    network = self.nova().networks.find(label=label_or_uuid)
+                    nic_info['net-id'] = network.id
             if net_data.get('fixed_ip'):
                 nic_info['v4-fixed-ip'] = net_data['fixed_ip']
             if net_data.get('port'):
@@ -362,6 +375,13 @@ class Server(resource.Resource):
 
         checkers = []
         server = None
+
+        if 'metadata' in prop_diff:
+            server = self.nova().servers.get(self.resource_id)
+            nova_utils.meta_update(self.nova(),
+                                   server,
+                                   prop_diff['metadata'])
+
         if 'flavor' in prop_diff:
 
             flavor_update_policy = (
@@ -373,7 +393,8 @@ class Server(resource.Resource):
 
             flavor = prop_diff['flavor']
             flavor_id = nova_utils.get_flavor_id(self.nova(), flavor)
-            server = self.nova().servers.get(self.resource_id)
+            if not server:
+                server = self.nova().servers.get(self.resource_id)
             checker = scheduler.TaskRunner(nova_utils.resize, server, flavor,
                                            flavor_id)
             checkers.append(checker)
@@ -388,8 +409,11 @@ class Server(resource.Resource):
             image_id = nova_utils.get_image_id(self.nova(), image)
             if not server:
                 server = self.nova().servers.get(self.resource_id)
-            checker = scheduler.TaskRunner(nova_utils.rebuild, server,
-                                           image_id)
+            preserve_ephemeral = (
+                image_update_policy == 'REBUILD_PRESERVE_EPHEMERAL')
+            checker = scheduler.TaskRunner(
+                nova_utils.rebuild, server, image_id,
+                preserve_ephemeral=preserve_ephemeral)
             checkers.append(checker)
 
         # Optimization: make sure the first task is started before
@@ -422,7 +446,7 @@ class Server(resource.Resource):
         super(Server, self).validate()
 
         # check validity of key
-        key_name = self.properties.get('key_name', None)
+        key_name = self.properties.get('key_name')
         if key_name:
             nova_utils.get_keypair(self.nova(), key_name)
 
@@ -443,13 +467,32 @@ class Server(resource.Resource):
                 raise exception.StackValidationFailed(message=msg)
 
         # make sure the image exists if specified.
-        image = self.properties.get('image', None)
+        image = self.properties.get('image')
         if image:
             nova_utils.get_image_id(self.nova(), image)
         elif not image and not bootable_vol:
             msg = _('Neither image nor bootable volume is specified for'
                     ' instance %s') % self.name
             raise exception.StackValidationFailed(message=msg)
+        # network properties 'uuid' and 'network' shouldn't be used
+        # both at once for all networks
+        networks = self.properties.get('networks') or []
+        for network in networks:
+            if network.get('uuid') and network.get('network'):
+                msg = _('Properties "uuid" and "network" are both set '
+                        'to the network "%(network)s" for the server '
+                        '"%(server)s". The "uuid" property is deprecated. '
+                        'Use only "network" property.'
+                        '') % dict(network=network['network'],
+                                   server=self.name)
+                raise exception.StackValidationFailed(message=msg)
+            elif network.get('uuid'):
+                logger.info(_('For the server "%(server)s" the "uuid" '
+                              'property is set to network "%(network)s". '
+                              '"uuid" property is deprecated. Use "network" '
+                              'property instead.'
+                              '') % dict(network=network['network'],
+                                         server=self.name))
 
     def handle_delete(self):
         '''
@@ -484,7 +527,7 @@ class Server(resource.Resource):
             raise exception.NotFound(_('Failed to find server %s') %
                                      self.resource_id)
         else:
-            logger.debug('suspending server %s' % self.resource_id)
+            logger.debug(_('suspending server %s') % self.resource_id)
             # We want the server.suspend to happen after the volume
             # detachement has finished, so pass both tasks and the server
             suspend_runner = scheduler.TaskRunner(server.suspend)
@@ -501,8 +544,9 @@ class Server(resource.Resource):
                 return True
 
             server.get()
-            logger.debug('%s check_suspend_complete status = %s' %
-                         (self.name, server.status))
+            logger.debug(_('%(name)s check_suspend_complete status '
+                         '= %(status)s') % {
+                         'name': self.name, 'status': server.status})
             if server.status in list(nova_utils.deferred_server_statuses +
                                      ['ACTIVE']):
                 return server.status == 'SUSPENDED'
@@ -529,7 +573,7 @@ class Server(resource.Resource):
             raise exception.NotFound(_('Failed to find server %s') %
                                      self.resource_id)
         else:
-            logger.debug('resuming server %s' % self.resource_id)
+            logger.debug(_('resuming server %s') % self.resource_id)
             server.resume()
             return server
 

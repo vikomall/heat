@@ -16,22 +16,46 @@
 from heat.engine import clients
 from heat.common import exception
 from heat.openstack.common import log as logging
+from heat.openstack.common.gettextutils import _
+from heat.engine import properties
 from heat.engine import resource
+from heat.engine.resources import route_table
 
 logger = logging.getLogger(__name__)
 
 
 class InternetGateway(resource.Resource):
-    tags_schema = {'Key': {'Type': 'String',
-                           'Required': True},
-                   'Value': {'Type': 'String',
-                             'Required': True}}
+
+    PROPERTIES = (
+        TAGS,
+    ) = (
+        'Tags',
+    )
+
+    _TAG_KEYS = (
+        TAG_KEY, TAG_VALUE,
+    ) = (
+        'Key', 'Value',
+    )
 
     properties_schema = {
-        'Tags': {'Type': 'List', 'Schema': {
-            'Type': 'Map',
-            'Implemented': False,
-            'Schema': tags_schema}}
+        TAGS: properties.Schema(
+            properties.Schema.LIST,
+            schema=properties.Schema(
+                properties.Schema.MAP,
+                schema={
+                    TAG_KEY: properties.Schema(
+                        properties.Schema.STRING,
+                        required=True
+                    ),
+                    TAG_VALUE: properties.Schema(
+                        properties.Schema.STRING,
+                        required=True
+                    ),
+                },
+                implemented=False,
+            )
+        ),
     }
 
     def handle_create(self):
@@ -49,32 +73,41 @@ class InternetGateway(resource.Resource):
             # add a heat configuration variable to set the ID of
             # the default one
             raise exception.Error(
-                'Expected 1 external network, found %d' % len(ext_nets))
+                _('Expected 1 external network, found %d') % len(ext_nets))
         external_network_id = ext_nets[0]['id']
         return external_network_id
 
 
 class VPCGatewayAttachment(resource.Resource):
 
+    PROPERTIES = (
+        VPC_ID, INTERNET_GATEWAY_ID, VPN_GATEWAY_ID,
+    ) = (
+        'VpcId', 'InternetGatewayId', 'VpnGatewayId',
+    )
+
     properties_schema = {
-        'VpcId': {
-            'Type': 'String',
-            'Required': True,
-            'Description': _('VPC ID for this gateway association.')},
-        'InternetGatewayId': {
-            'Type': 'String',
-            'Description': _('ID of the InternetGateway.')},
-        'VpnGatewayId': {
-            'Type': 'String',
-            'Implemented': False,
-            'Description': _('ID of the VPNGateway to attach to the VPC.')}
+        VPC_ID: properties.Schema(
+            properties.Schema.STRING,
+            _('VPC ID for this gateway association.'),
+            required=True
+        ),
+        INTERNET_GATEWAY_ID: properties.Schema(
+            properties.Schema.STRING,
+            _('ID of the InternetGateway.')
+        ),
+        VPN_GATEWAY_ID: properties.Schema(
+            properties.Schema.STRING,
+            _('ID of the VPNGateway to attach to the VPC.'),
+            implemented=False
+        ),
     }
 
     def _vpc_route_tables(self):
         for resource in self.stack.itervalues():
             if (resource.has_interface('AWS::EC2::RouteTable') and
-                resource.properties.get('VpcId') ==
-                    self.properties.get('VpcId')):
+                resource.properties.get(route_table.RouteTable.VPC_ID) ==
+                    self.properties.get(self.VPC_ID)):
                         yield resource
 
     def add_dependencies(self, deps):

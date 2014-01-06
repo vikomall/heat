@@ -16,6 +16,7 @@
 import itertools
 
 from heat.openstack.common import log
+from heat.openstack.common.gettextutils import _
 from heat.common import exception
 
 
@@ -196,6 +197,8 @@ class ResourceRegistry(object):
             return
 
         if name in registry and isinstance(registry[name], ResourceInfo):
+            if registry[name] == info:
+                return
             details = {
                 'path': descriptive_path,
                 'was': str(registry[name].value),
@@ -272,10 +275,18 @@ class ResourceRegistry(object):
                 return match
 
     def get_class(self, resource_type, resource_name=None):
+        if resource_type == "":
+            msg = _('Resource "%s" has no type') % resource_name
+            raise exception.StackValidationFailed(message=msg)
+        elif resource_type is None:
+            msg = _('Non-empty resource type is required '
+                    'for resource "%s"') % resource_name
+            raise exception.StackValidationFailed(message=msg)
+
         info = self.get_resource_info(resource_type,
                                       resource_name=resource_name)
         if info is None:
-            msg = "Unknown resource Type : %s" % resource_type
+            msg = _("Unknown resource Type : %s") % resource_type
             raise exception.StackValidationFailed(message=msg)
         return info.get_class()
 
@@ -292,13 +303,18 @@ class ResourceRegistry(object):
 
         return _as_dict(self._registry)
 
-    def get_types(self):
+    def get_types(self, support_status):
         '''Return a list of valid resource types.'''
+
         def is_plugin(key):
-            if isinstance(self._registry[key], ClassResourceInfo):
-                return True
-            return False
-        return [k for k in self._registry if is_plugin(k)]
+            return isinstance(self._registry[key], ClassResourceInfo)
+
+        def status_matches(cls):
+            return support_status is None or \
+                cls.value.support_status.status == support_status.encode()
+
+        return [name for name, cls in self._registry.iteritems()
+                if is_plugin(name) and status_matches(cls)]
 
 
 SECTIONS = (PARAMETERS, RESOURCE_REGISTRY) = \
@@ -347,8 +363,8 @@ class Environment(object):
     def get_class(self, resource_type, resource_name=None):
         return self.registry.get_class(resource_type, resource_name)
 
-    def get_types(self):
-        return self.registry.get_types()
+    def get_types(self, support_status=None):
+        return self.registry.get_types(support_status)
 
     def get_resource_info(self, resource_type, resource_name=None,
                           registry_type=None):

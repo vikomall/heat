@@ -13,6 +13,7 @@
 #    under the License.
 
 import copy
+import uuid
 
 import mox
 
@@ -70,7 +71,7 @@ class InstancesTest(HeatTestCase):
         template = parser.Template(t)
         stack = parser.Stack(utils.dummy_context(), stack_name, template,
                              environment.Environment({'KeyName': 'test'}),
-                             stack_id=uuidutils.generate_uuid())
+                             stack_id=str(uuid.uuid4()))
         return (t, stack)
 
     def _setup_test_instance(self, return_server, name, image_id=None,
@@ -94,7 +95,12 @@ class InstancesTest(HeatTestCase):
             server_userdata = nova_utils.build_userdata(
                 instance,
                 instance.t['Properties']['UserData'])
-            instance.mime_string = server_userdata
+            self.m.StubOutWithMock(nova_utils, 'build_userdata')
+            nova_utils.build_userdata(
+                instance,
+                instance.t['Properties']['UserData']).AndReturn(
+                    server_userdata)
+
             self.m.StubOutWithMock(self.fc.servers, 'create')
             self.fc.servers.create(
                 image=1, flavor=1, key_name='test',
@@ -286,7 +292,7 @@ class InstancesTest(HeatTestCase):
         uuidutils.is_uuid_like('1').AndReturn(True)
         self.m.ReplayAll()
 
-        self.assertEqual(instance.validate(), None)
+        self.assertIsNone(instance.validate())
 
         self.m.VerifyAll()
 
@@ -305,7 +311,7 @@ class InstancesTest(HeatTestCase):
         mox.Replay(get)
 
         scheduler.TaskRunner(instance.delete)()
-        self.assertTrue(instance.resource_id is None)
+        self.assertIsNone(instance.resource_id)
         self.assertEqual(instance.state, (instance.DELETE, instance.COMPLETE))
         self.m.VerifyAll()
 
@@ -635,8 +641,8 @@ class InstancesTest(HeatTestCase):
         instance = self._create_test_instance(return_server,
                                               'build_nics')
 
-        self.assertEqual(None, instance._build_nics([]))
-        self.assertEqual(None, instance._build_nics(None))
+        self.assertIsNone(instance._build_nics([]))
+        self.assertIsNone(instance._build_nics(None))
         self.assertEqual([
             {'port-id': 'id3'}, {'port-id': 'id1'}, {'port-id': 'id2'}],
             instance._build_nics([
@@ -675,46 +681,59 @@ class InstancesTest(HeatTestCase):
         security_groups = ['security_group_1']
         self._test_security_groups(instance, security_groups)
 
-        security_groups = ['fake_id_1']
-        self._test_security_groups(instance, security_groups)
+        security_groups = ['0389f747-7785-4757-b7bb-2ab07e4b09c3']
+        self._test_security_groups(instance, security_groups, all_uuids=True)
 
-        security_groups = ['security_group_1', 'security_group_1']
-        self._test_security_groups(instance, security_groups)
+        security_groups = ['0389f747-7785-4757-b7bb-2ab07e4b09c3',
+                           '384ccd91-447c-4d83-832c-06974a7d3d05']
+        self._test_security_groups(instance, security_groups,
+                                   sg='two', all_uuids=True)
 
-        security_groups = ['fake_id_1', 'fake_id_1']
-        self._test_security_groups(instance, security_groups)
-
-        security_groups = ['security_group_1', 'fake_id_1']
-        self._test_security_groups(instance, security_groups)
-
-        security_groups = ['security_group_1', 'fake_id_2']
+        security_groups = ['security_group_1',
+                           '384ccd91-447c-4d83-832c-06974a7d3d05']
         self._test_security_groups(instance, security_groups, sg='two')
 
-        security_groups = ['wrong_group_id']
-        self._test_security_groups(instance, security_groups, sg='zero')
-
-        security_groups = ['wrong_group_id', 'fake_id_1']
-        self._test_security_groups(instance, security_groups)
-
         security_groups = ['wrong_group_name']
-        self._test_security_groups(instance, security_groups, sg='zero')
+        self._test_security_groups(
+            instance,
+            security_groups,
+            sg='zero',
+            get_secgroup_raises=exception.PhysicalResourceNotFound)
+
+        security_groups = ['wrong_group_name',
+                           '0389f747-7785-4757-b7bb-2ab07e4b09c3']
+        self._test_security_groups(
+            instance,
+            security_groups,
+            get_secgroup_raises=exception.PhysicalResourceNotFound)
 
         security_groups = ['wrong_group_name', 'security_group_1']
-        self._test_security_groups(instance, security_groups)
+        self._test_security_groups(
+            instance,
+            security_groups,
+            get_secgroup_raises=exception.PhysicalResourceNotFound)
 
-    def _test_security_groups(self, instance, security_groups, sg='one'):
+        security_groups = ['duplicate_group_name', 'security_group_1']
+        self._test_security_groups(
+            instance,
+            security_groups,
+            get_secgroup_raises=exception.PhysicalResourceNameAmbiguity)
+
+    def _test_security_groups(self, instance, security_groups, sg='one',
+                              all_uuids=False, get_secgroup_raises=None):
         fake_groups_list, props = self._get_fake_properties(sg)
-
-        def generate_sg_list():
-            yield fake_groups_list
 
         nclient = neutronclient.Client()
         self.m.StubOutWithMock(instance, 'neutron')
         instance.neutron().MultipleTimes().AndReturn(nclient)
 
-        self.m.StubOutWithMock(neutronclient.Client, 'list_security_groups')
-        neutronclient.Client.list_security_groups(
-            instance.resource_id).AndReturn(generate_sg_list())
+        if not all_uuids:
+            # list_security_groups only gets called when none of the requested
+            # groups look like UUIDs.
+            self.m.StubOutWithMock(
+                neutronclient.Client, 'list_security_groups')
+            neutronclient.Client.list_security_groups().AndReturn(
+                fake_groups_list)
 
         net_interface = network_interface.NetworkInterface
         self.m.StubOutWithMock(net_interface, 'network_id_from_subnet_id')
@@ -722,18 +741,24 @@ class InstancesTest(HeatTestCase):
             nclient,
             'fake_subnet_id').MultipleTimes().AndReturn('fake_network_id')
 
-        self.m.StubOutWithMock(neutronclient.Client, 'create_port')
-        neutronclient.Client.create_port(
-            {'port': props}).MultipleTimes().AndReturn(
-                {'port': {'id': 'fake_port_id'}})
+        if not get_secgroup_raises:
+            self.m.StubOutWithMock(neutronclient.Client, 'create_port')
+            neutronclient.Client.create_port(
+                {'port': props}).MultipleTimes().AndReturn(
+                    {'port': {'id': 'fake_port_id'}})
 
         self.m.ReplayAll()
 
-        self.assertEqual(
-            [{'port-id': 'fake_port_id'}],
-            instance._build_nics(None,
-                                 security_groups=security_groups,
-                                 subnet_id='fake_subnet_id'))
+        if get_secgroup_raises:
+            self.assertRaises(get_secgroup_raises, instance._build_nics, None,
+                              security_groups=security_groups,
+                              subnet_id='fake_subnet_id')
+        else:
+            self.assertEqual(
+                [{'port-id': 'fake_port_id'}],
+                instance._build_nics(None,
+                                     security_groups=security_groups,
+                                     subnet_id='fake_subnet_id'))
 
         self.m.VerifyAll()
         self.m.UnsetStubs()
@@ -742,14 +767,26 @@ class InstancesTest(HeatTestCase):
         fake_groups_list = {
             'security_groups': [
                 {
-                    'id': 'fake_id_1',
+                    'id': '0389f747-7785-4757-b7bb-2ab07e4b09c3',
                     'name': 'security_group_1',
                     'security_group_rules': [],
                     'description': 'no protocol'
                 },
                 {
-                    'id': 'fake_id_2',
+                    'id': '384ccd91-447c-4d83-832c-06974a7d3d05',
                     'name': 'security_group_2',
+                    'security_group_rules': [],
+                    'description': 'no protocol'
+                },
+                {
+                    'id': 'e91a0007-06a6-4a4a-8edb-1d91315eb0ef',
+                    'name': 'duplicate_group_name',
+                    'security_group_rules': [],
+                    'description': 'no protocol'
+                },
+                {
+                    'id': '8be37f3c-176d-4826-aa17-77d1d9df7b2e',
+                    'name': 'duplicate_group_name',
                     'security_group_rules': [],
                     'description': 'no protocol'
                 }
@@ -761,15 +798,16 @@ class InstancesTest(HeatTestCase):
             'admin_state_up': True,
             'network_id': 'fake_network_id',
             'fixed_ips': [fixed_ip],
-            'security_groups': ['fake_id_1']
+            'security_groups': ['0389f747-7785-4757-b7bb-2ab07e4b09c3']
         }
 
         if sg == 'zero':
             props['security_groups'] = []
         elif sg == 'one':
-            props['security_groups'] = ['fake_id_1']
+            props['security_groups'] = ['0389f747-7785-4757-b7bb-2ab07e4b09c3']
         elif sg == 'two':
-            props['security_groups'] = ['fake_id_1', 'fake_id_2']
+            props['security_groups'] = ['0389f747-7785-4757-b7bb-2ab07e4b09c3',
+                                        '384ccd91-447c-4d83-832c-06974a7d3d05']
 
         return fake_groups_list, props
 

@@ -21,15 +21,16 @@ import json
 import os
 import pkgutil
 
-from urlparse import urlparse
-
 from oslo.config import cfg
 
 from heat.common import exception
 from heat.engine import clients
 from heat.engine import scheduler
 from heat.openstack.common import log as logging
+from heat.openstack.common.gettextutils import _
 from heat.openstack.common import uuidutils
+from heat.openstack.common.py3kcompat import urlutils
+
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +61,7 @@ def get_image_id(nova_client, image_identifier):
         try:
             image_id = nova_client.images.get(image_identifier).id
         except clients.novaclient.exceptions.NotFound:
-            logger.info("Image %s was not found in glance"
+            logger.info(_("Image %s was not found in glance")
                         % image_identifier)
             raise exception.ImageNotFound(image_name=image_identifier)
     else:
@@ -68,16 +69,17 @@ def get_image_id(nova_client, image_identifier):
             image_list = nova_client.images.list()
         except clients.novaclient.exceptions.ClientException as ex:
             raise exception.Error(
-                message="Error retrieving image list from nova: %s" % str(ex))
+                message=(_("Error retrieving image list from nova: %s") %
+                         str(ex)))
         image_names = dict(
             (o.id, o.name)
             for o in image_list if o.name == image_identifier)
         if len(image_names) == 0:
-            logger.info("Image %s was not found in glance" %
+            logger.info(_("Image %s was not found in glance") %
                         image_identifier)
             raise exception.ImageNotFound(image_name=image_identifier)
         elif len(image_names) > 1:
-            logger.info("Mulitple images %s were found in glance with name"
+            logger.info(_("Mulitple images %s were found in glance with name")
                         % image_identifier)
             raise exception.PhysicalResourceNameAmbiguity(
                 name=image_identifier)
@@ -124,7 +126,8 @@ def get_keypair(nova_client, key_name):
     raise exception.UserKeyPairMissing(key_name=key_name)
 
 
-def build_userdata(resource, userdata=None, instance_user=None):
+def build_userdata(resource, userdata=None, instance_user=None,
+                   user_data_format='HEAT_CFNTOOLS'):
     '''
     Build multipart data blob for CloudInit which includes user-supplied
     Metadata, user data, and the required Heat in-instance configuration.
@@ -135,8 +138,13 @@ def build_userdata(resource, userdata=None, instance_user=None):
     :type userdata: str or None
     :param instance_user: the user to create on the server
     :type instance_user: string
+    :param user_data_format: Format of user data to return
+    :type user_data_format: string
     :returns: multipart mime as a string
     '''
+
+    if user_data_format == 'RAW':
+        return userdata
 
     def make_subpart(content, filename, subtype=None):
         if subtype is None:
@@ -173,8 +181,8 @@ def build_userdata(resource, userdata=None, instance_user=None):
 
     # Create a boto config which the cfntools on the host use to know
     # where the cfn and cw API's are to be accessed
-    cfn_url = urlparse(cfg.CONF.heat_metadata_server_url)
-    cw_url = urlparse(cfg.CONF.heat_watch_server_url)
+    cfn_url = urlutils.urlparse(cfg.CONF.heat_metadata_server_url)
+    cw_url = urlutils.urlparse(cfg.CONF.heat_watch_server_url)
     is_secure = cfg.CONF.instance_connection_is_secure
     vcerts = cfg.CONF.instance_connection_https_validate_certificates
     boto_cfg = "\n".join(["[Boto]",
@@ -237,9 +245,14 @@ def check_resize(server, flavor, flavor_id):
 
 
 @scheduler.wrappertask
-def rebuild(server, image_id):
+def rebuild(server, image_id, preserve_ephemeral=False):
     """Rebuild the server and call check_rebuild to verify."""
-    server.rebuild(image_id)
+    # Only require a newer nova client if the new preserve_ephemeral feature is
+    # actually used.
+    kwargs = {}
+    if preserve_ephemeral:
+        kwargs['preserve_ephemeral'] = True
+    server.rebuild(image_id, **kwargs)
     yield check_rebuild(server, image_id)
 
 
@@ -257,6 +270,16 @@ def check_rebuild(server, image_id):
             _("Rebuilding server failed, status '%s'") % server.status)
 
 
+def meta_update(client, server, metadata):
+    """Delete/Add the metadata in nova as needed."""
+    current_md = server.metadata
+    to_del = [key for key in current_md.keys() if key not in metadata]
+    if len(to_del) > 0:
+        client.servers.delete_meta(server, to_del)
+
+    client.servers.set_meta(server, metadata)
+
+
 def server_to_ipaddress(client, server):
     '''
     Return the server's IP address, fetching it from Nova.
@@ -264,7 +287,8 @@ def server_to_ipaddress(client, server):
     try:
         server = client.servers.get(server)
     except clients.novaclient.exceptions.NotFound as ex:
-        logger.warn('Instance (%s) not found: %s' % (server, str(ex)))
+        logger.warn(_('Instance (%(server)s) not found: %(ex)s') % {
+                    'server': server, 'ex': str(ex)})
     else:
         for n in server.networks:
             if len(server.networks[n]) > 0:

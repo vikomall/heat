@@ -83,7 +83,14 @@ class EngineRpcAPITestCase(testtools.TestCase):
         self._test_engine_api('authenticated_to_backend', 'call')
 
     def test_list_stacks(self):
-        self._test_engine_api('list_stacks', 'call')
+        default_args = {
+            'limit': mock.ANY,
+            'sort_keys': mock.ANY,
+            'marker': mock.ANY,
+            'sort_dir': mock.ANY,
+            'filters': mock.ANY
+        }
+        self._test_engine_api('list_stacks', 'call', **default_args)
 
     def test_identify_stack(self):
         self._test_engine_api('identify_stack', 'call',
@@ -105,7 +112,7 @@ class EngineRpcAPITestCase(testtools.TestCase):
                               template={u'Foo': u'bar'},
                               params={u'InstanceType': u'm1.xlarge'},
                               files={},
-                              args={})
+                              args=mock.ANY)
 
     def test_get_template(self):
         self._test_engine_api('get_template', 'call',
@@ -124,7 +131,8 @@ class EngineRpcAPITestCase(testtools.TestCase):
                               template={u'Foo': u'bar'})
 
     def test_list_resource_types(self):
-        self._test_engine_api('list_resource_types', 'call')
+        self._test_engine_api('list_resource_types', 'call',
+                              support_status=None, version='1.1')
 
     def test_resource_schema(self):
         self._test_engine_api('resource_schema', 'call', type_name="TYPE")

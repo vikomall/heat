@@ -29,6 +29,7 @@ class EngineClient(heat.openstack.common.rpc.proxy.RpcProxy):
     API version history::
 
         1.0 - Initial version.
+        1.1 - Add support_status argument to list_resource_types()
     '''
 
     BASE_RPC_API_VERSION = '1.0'
@@ -50,13 +51,34 @@ class EngineClient(heat.openstack.common.rpc.proxy.RpcProxy):
         return self.call(ctxt, self.make_msg('identify_stack',
                                              stack_name=stack_name))
 
-    def list_stacks(self, ctxt):
+    def list_stacks(self, ctxt, limit=None, marker=None, sort_keys=None,
+                    sort_dir=None, filters=None):
         """
-        The list_stacks method returns the attributes of all stacks.
+        The list_stacks method returns attributes of all stacks.  It supports
+        pagination (``limit`` and ``marker``), sorting (``sort_keys`` and
+        ``sort_dir``) and filtering (``filters``) of the results.
 
         :param ctxt: RPC context.
+        :param limit: the number of stacks to list (integer or string)
+        :param marker: the ID of the last item in the previous page
+        :param sort_keys: an array of fields used to sort the list
+        :param sort_dir: the direction of the sort ('asc' or 'desc')
+        :param filters: a dict with attribute:value to filter the list
+        :returns: a list of stacks
         """
-        return self.call(ctxt, self.make_msg('list_stacks'))
+        return self.call(ctxt, self.make_msg('list_stacks', limit=limit,
+                         sort_keys=sort_keys, marker=marker,
+                         sort_dir=sort_dir, filters=filters))
+
+    def count_stacks(self, ctxt, filters=None):
+        """
+        Return the number of stacks that match the given filters
+        :param ctxt: RPC context.
+        :param filters: a dict of ATTR:VALUE to match agains stacks
+        :returns: a integer representing the number of matched stacks
+        """
+        return self.call(ctxt, self.make_msg('count_stacks',
+                                             filters=filters))
 
     def show_stack(self, ctxt, stack_identity):
         """
@@ -152,13 +174,27 @@ class EngineClient(heat.openstack.common.rpc.proxy.RpcProxy):
                           self.make_msg('delete_stack',
                                         stack_identity=stack_identity))
 
-    def list_resource_types(self, ctxt):
+    def abandon_stack(self, ctxt, stack_identity):
+        """
+        The abandon_stack method deletes a given stack but
+        resources would not be deleted.
+
+        :param ctxt: RPC context.
+        :param stack_identity: Name of the stack you want to abandon.
+        """
+        return self.call(ctxt,
+                         self.make_msg('abandon_stack',
+                                       stack_identity=stack_identity))
+
+    def list_resource_types(self, ctxt, support_status=None):
         """
         Get a list of valid resource types.
 
         :param ctxt: RPC context.
         """
-        return self.call(ctxt, self.make_msg('list_resource_types'))
+        return self.call(ctxt, self.make_msg('list_resource_types',
+                                             support_status=support_status),
+                         version='1.1')
 
     def resource_schema(self, ctxt, type_name):
         """
@@ -311,3 +347,6 @@ class EngineClient(heat.openstack.common.rpc.proxy.RpcProxy):
         return self.call(ctxt, self.make_msg('set_watch_state',
                                              watch_name=watch_name,
                                              state=state))
+
+    def get_revision(self, ctxt):
+        return self.call(ctxt, self.make_msg('get_revision'))

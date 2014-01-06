@@ -13,8 +13,7 @@
 #    under the License.
 
 import itertools
-
-import testscenarios
+import uuid
 
 from heat.common import exception
 from heat.engine import dependencies
@@ -23,15 +22,12 @@ from heat.engine import resource
 from heat.engine import scheduler
 from heat.engine import template
 from heat.engine import environment
-from heat.openstack.common import uuidutils
+from heat.openstack.common.gettextutils import _
 import heat.db.api as db_api
 
 from heat.tests import generic_resource as generic_rsrc
 from heat.tests.common import HeatTestCase
 from heat.tests import utils
-
-
-load_tests = testscenarios.load_tests_apply_scenarios
 
 
 class ResourceTest(HeatTestCase):
@@ -48,7 +44,7 @@ class ResourceTest(HeatTestCase):
 
         self.stack = parser.Stack(utils.dummy_context(), 'test_stack',
                                   parser.Template({}), env=env,
-                                  stack_id=uuidutils.generate_uuid())
+                                  stack_id=str(uuid.uuid4()))
 
     def test_get_class_ok(self):
         cls = resource.get_class('GenericResourceType')
@@ -67,6 +63,23 @@ class ResourceTest(HeatTestCase):
         self.assertRaises(exception.StackValidationFailed,
                           resource.Resource, 'aresource', snippet, self.stack)
 
+    def test_resource_non_type(self):
+        snippet = {'Type': ''}
+        resource_name = 'aresource'
+        ex = self.assertRaises(exception.StackValidationFailed,
+                               resource.Resource, resource_name,
+                               snippet, self.stack)
+        self.assertIn(_('Resource "%s" has no type') % resource_name, str(ex))
+
+    def test_resource_missed_type(self):
+        snippet = {'not-a-Type': 'GenericResourceType'}
+        resource_name = 'aresource'
+        ex = self.assertRaises(exception.StackValidationFailed,
+                               resource.Resource, resource_name,
+                               snippet, self.stack)
+        self.assertIn(_('Non-empty resource type is required '
+                        'for resource "%s"') % resource_name, str(ex))
+
     def test_state_defaults(self):
         tmpl = {'Type': 'Foo'}
         res = generic_rsrc.GenericResource('test_res_def', tmpl, self.stack)
@@ -81,6 +94,29 @@ class ResourceTest(HeatTestCase):
         self.assertEqual(res.status, res.COMPLETE)
         self.assertEqual(res.state, (res.CREATE, res.COMPLETE))
         self.assertEqual(res.status_reason, 'wibble')
+
+    def test_set_deletion_policy(self):
+        tmpl = {'Type': 'Foo'}
+        res = generic_rsrc.GenericResource('test_resource', tmpl, self.stack)
+        res.set_deletion_policy(resource.RETAIN)
+        self.assertEqual(resource.RETAIN, res.t['DeletionPolicy'])
+        res.set_deletion_policy(resource.DELETE)
+        self.assertEqual(resource.DELETE, res.t['DeletionPolicy'])
+
+    def test_get_abandon_data(self):
+        tmpl = {'Type': 'Foo'}
+        res = generic_rsrc.GenericResource('test_resource', tmpl, self.stack)
+        expected = {
+            'action': 'INIT',
+            'metadata': {},
+            'name': 'test_resource',
+            'resource_data': {},
+            'resource_id': None,
+            'status': 'COMPLETE',
+            'type': 'Foo'
+        }
+        actual = res.get_abandon_data()
+        self.assertEqual(expected, actual)
 
     def test_state_set_invalid(self):
         tmpl = {'Type': 'Foo'}
@@ -1105,3 +1141,26 @@ class ReducePhysicalResourceNameTest(HeatTestCase):
             else:
                 # check that nothing has changed
                 self.assertEqual(self.original, reduced)
+
+
+class SupportStatusTest(HeatTestCase):
+    def test_valid_status(self):
+        status = resource.SupportStatus(
+            status='DEPRECATED',
+            message='test_message',
+            version='test_version'
+        )
+        self.assertEqual('DEPRECATED', status.status)
+        self.assertEqual('test_message', status.message)
+        self.assertEqual('test_version', status.version)
+
+    def test_invalid_status(self):
+        status = resource.SupportStatus(
+            status='RANDOM',
+            message='test_message',
+            version='test_version'
+        )
+        self.assertEqual('UNKNOWN', status.status)
+        self.assertEqual('Specified status is invalid, defaulting to UNKNOWN',
+                         status.message)
+        self.assertEqual(None, status.version)
