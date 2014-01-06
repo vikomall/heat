@@ -24,6 +24,7 @@ import novaclient.exceptions as novaexception
 
 from heat.common import exception
 from heat.engine.resources import nova_utils
+from heat.engine import properties
 from heat.engine import resource
 from heat.openstack.common import log as logging
 
@@ -118,26 +119,28 @@ class WinServer(resource.Resource):
     '''
     Rackspace cloud Windows server resource.
     '''
+    PROPERTIES = (
+        NAME, FLAVOR, IMAGE, USER_DATA
+    ) = (
+        'name', 'flavor', 'image', 'user_data'
+    )
+
     properties_schema = {
-        'name': {
-            'Type': 'String',
-            'Default': 'MyWindowsServer'
-        },
-
-        'flavor': {
-            'Type': 'String',
-            'Required': True
-        },
-
-        'image': {
-            'Type': 'String',
-            'Default': 'Windows Server 2012 (with updates)'
-        },
-
-        'user_data': {
-            'Type': 'String',
-            'Default': 'None'
-        }
+        FLAVOR: properties.Schema(
+            properties.Schema.STRING,
+            required=True,
+            update_allowed=True
+        ),
+        IMAGE: properties.Schema(
+            properties.Schema.STRING,
+            required=True
+        ),
+        USER_DATA: properties.Schema(
+            properties.Schema.STRING
+        ),
+        NAME: properties.Schema(
+            properties.Schema.STRING
+        ),
     }
 
     attributes_schema = {'PrivateDnsName': ('Private DNS name of the specified'
@@ -185,7 +188,7 @@ class WinServer(resource.Resource):
                     return ip['addr']
 
         raise exception.Error("Could not determine the %s IP of %s." %
-                              (ip_type, self.properties['image']))
+                              (ip_type, self.properties[self.IMAGE]))
 
     @property
     def public_ip(self):
@@ -220,9 +223,9 @@ class WinServer(resource.Resource):
         Create Rackspace Cloud Windows Server Instance.
         '''
         logger.debug("WinServer instance handle_create called")
-        serverinstancename = self.properties['name']
-        flavor = self.properties['flavor']
-        image = self.properties['image']
+        serverinstancename = self.properties[self.NAME]
+        flavor = self.properties[self.FLAVOR]
+        image = self.properties[self.IMAGE]
         flavor_id = nova_utils.get_flavor_id(self.nova(), flavor)
 
         # create Windows server instance
@@ -307,7 +310,7 @@ class WinServer(resource.Resource):
             logger.info("Spawning a process to begin installation steps.")
             # create a powershellscript with given user_data
             self._ps_script = self._userdata_ps_script(
-                self.properties['user_data'])
+                self.properties[self.USER_DATA])
             # create a batch file that launches given powershell script
             self._tmp_batch_file = self._wrapper_batch_script(
                 os.path.basename(self._ps_script))
@@ -392,7 +395,7 @@ class WinServer(resource.Resource):
             return res
 
         # check validity of given image
-        if self.properties['image'] not in self.images:
+        if self.properties[self.IMAGE] not in self.images:
             return {'Error': 'Image not found.'}
         ## check validity of gvien flavor
         #if self.properties['flavor'] not in self.flavors:
