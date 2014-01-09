@@ -49,6 +49,10 @@ import random
 import string
 import time
 
+from heat.openstack.common import log as logging
+
+logger = logging.getLogger(__name__)
+
 
 class RemComMessage(Structure):
     structure = (
@@ -102,7 +106,7 @@ class PSEXEC:
             protodef = PSEXEC.KNOWN_PROTOCOLS[protocol]
             port = protodef[1]
 
-            print "Trying protocol %s...\n" % protocol
+            logger.info("Trying protocol %s...\n" % protocol)
             stringbinding = protodef[0] % addr
 
             rpctransport = transport.DCERPCTransportFactory(stringbinding)
@@ -130,7 +134,7 @@ class PSEXEC:
                 pass
 
         if tries == 0:
-            print '[!] Pipe not ready, aborting'
+            logger.info('[!] Pipe not ready, aborting')
             raise
 
         fid = s.openFile(tid, pipe, accessMask, creationOption=0x40,
@@ -143,8 +147,8 @@ class PSEXEC:
         dce = dcerpc.DCERPC_v5(rpctransport)
         try:
             dce.connect()
-        except Exception, e:
-            print e
+        except Exception as e:
+            logger.warn(str(e))
             sys.exit(1)
 
         global dialect
@@ -163,8 +167,8 @@ class PSEXEC:
             else:
                 try:
                     f = open(self.__exeFile)
-                except Exception, e:
-                    print e
+                except Exception as e:
+                    logger.warn(str(e))
                     sys.exit(1)
                 installService = serviceinstall.ServiceInstall(
                     rpctransport.get_smb_connection(), f)
@@ -189,8 +193,8 @@ class PSEXEC:
 
             s.writeNamedPipe(tid, fid_main, str(packet))
 
-            # Here we'll store the command we type so we don't print it back ;)
-            # ( I know.. globals are nasty :P )
+            # Here we'll store the command we type so we don't logger.info
+            #it back ;) ( I know.. globals are nasty :P )
             global LastDataSent
             LastDataSent = ''
 
@@ -222,9 +226,10 @@ class PSEXEC:
 
             if len(ans):
                 retCode = RemComResponse(ans)
-                print "[*] Process %s finished with ErrorCode: %d, "\
-                      "ReturnCode: %d" % (self.__command, retCode['ErrorCode'],
-                                          retCode['ReturnCode'])
+                logger.info("[*] Process %s finished with ErrorCode: %d, "
+                            "ReturnCode: %d" % (self.__command,
+                                                retCode['ErrorCode'],
+                                                retCode['ReturnCode']))
             installService.uninstall()
             unInstalled = True
             sys.exit(retCode['ReturnCode'])
@@ -277,8 +282,8 @@ class Pipes(Thread):
                                             fileAttributes=0x80)
             self.server.setTimeout(1000000)
         except:
-            print "[!] Something wen't wrong connecting the pipes(%s), "\
-                  "try again" % self.__class__
+            logger.info("[!] Something wen't wrong connecting the pipes(%s), "
+                        "try again" % self.__class__)
 
 
 class RemoteStdOutPipe(Pipes):
@@ -290,7 +295,7 @@ class RemoteStdOutPipe(Pipes):
         while True:
             try:
                 ans = self.server.readFile(self.tid, self.fid, 0, 1024)
-            except Exception, e:
+            except Exception:
                 pass
             else:
                 try:
@@ -320,7 +325,7 @@ class RemoteStdErrPipe(Pipes):
         while True:
             try:
                 ans = self.server.readFile(self.tid, self.fid, 0, 1024)
-            except Exception, e:
+            except Exception:
                 pass
             else:
                 try:
@@ -355,7 +360,7 @@ class RemoteShell(cmd.Cmd):
         self.transferClient.login(user, passwd, domain, lm, nt)
 
     def do_help(self, line):
-        print """
+        logger.info("""
  lcd {path}                 - changes the current local directory to {path}
  exit                       - terminates the server process (and this session)
  put {src_file, dst_path}   - uploads a local file to the dst_path RELATIVE to
@@ -363,7 +368,7 @@ class RemoteShell(cmd.Cmd):
  get {file}                 - downloads pathname RELATIVE to the connected
                               share (%s) to the current local dir
  ! {cmd}                    - executes a local shell cmd""" % (self.share,
-                                                               self.share)
+                                                               self.share))
         self.send_data('\r\n', False)
 
     def do_shell(self, s):
@@ -378,11 +383,11 @@ class RemoteShell(cmd.Cmd):
             import ntpath
             filename = ntpath.basename(src_path)
             fh = open(filename, 'wb')
-            print "[*] Downloading %s\%s" % (self.share, src_path)
+            logger.info("[*] Downloading %s\%s" % (self.share, src_path))
             self.transferClient.getFile(self.share, src_path, fh.write)
             fh.close()
-        except Exception, e:
-            print e
+        except Exception as e:
+            logger.info(str(e))
             pass
 
         self.send_data('\r\n')
@@ -403,20 +408,20 @@ class RemoteShell(cmd.Cmd):
             fh = open(src_path, 'rb')
             f = dst_path + '/' + src_file
             pathname = string.replace(f, '/', '\\')
-            print "[*] Uploading %s to %s\%s" % (src_file,
-                                                 self.share,
-                                                 dst_path)
+            logger.info("[*] Uploading %s to %s\%s" % (src_file,
+                                                       self.share,
+                                                       dst_path))
             self.transferClient.putFile(self.share, pathname, fh.read)
             fh.close()
-        except Exception, e:
-            print e
+        except Exception as e:
+            logger.info(e)
             pass
 
         self.send_data('\r\n')
 
     def do_lcd(self, s):
         if s == '':
-            print os.getcwd()
+            logger.info(os.getcwd())
         else:
             os.chdir(s)
         self.send_data('\r\n')
@@ -453,7 +458,7 @@ class RemoteStdInPipe(Pipes):
 
 # Process command-line arguments.
 if __name__ == '__main__':
-    #print version.BANNER
+    #logger.info version.BANNER
 
     parser = argparse.ArgumentParser()
 
