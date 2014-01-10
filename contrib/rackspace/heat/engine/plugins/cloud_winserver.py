@@ -298,7 +298,7 @@ class WinServer(resource.Resource):
                 self._server_up = True
 
         if not self._server_up:
-            if time.time() - self._timeout_start >= 900:
+            if time.time() - self._timeout_start >= 1500:
                 raise exception.Error("Server is not active... timedout!")
 
         if self._process is None:
