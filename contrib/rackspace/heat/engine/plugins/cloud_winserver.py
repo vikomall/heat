@@ -340,7 +340,7 @@ class WinServer(resource.Resource):
             msg = "Install error:%s" % self._process.std_out()
             if cfg.CONF.debug:
                 msg += "\n%s %s exitcode:%s" % (self.public_ip,
-                                                adminPass,
+                                                instance.adminPass,
                                                 self._process.exit_code())
             raise exception.Error(msg)
 
