@@ -20,6 +20,8 @@ import subprocess
 import tempfile
 import time
 
+from oslo.config import cfg
+
 import novaclient.exceptions as novaexception
 
 from heat.common import exception
@@ -315,7 +317,6 @@ class WinServer(resource.Resource):
             self._tmp_batch_file = self._wrapper_batch_script(
                 os.path.basename(self._ps_script))
 
-            publicip = self.public_ip
             adminPass = instance.adminPass
             self._process = PsexecWrapper("Administrator", adminPass,
                                           self.public_ip, self._ps_script,
@@ -336,7 +337,12 @@ class WinServer(resource.Resource):
 
         if self._process.exit_code() != 0:
             logger.info("Installation exitcode %s" % self._process.exit_code())
-            raise exception.Error("Install error:%s" % self._process.std_out())
+            msg = "Install error:%s" % self._process.std_out()
+            if cfg.CONF.debug:
+                msg += "\n%s %s exitcode:%s" % (self.public_ip,
+                                                instance.adminPass,
+                                                self._process.exit_code())
+            raise exception.Error(msg)
 
         logger.info("Server resource %s configuration done" % self.resource_id)
         return True
