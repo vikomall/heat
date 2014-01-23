@@ -151,6 +151,8 @@ class WinServer(resource.Resource):
                                            'instance.'),
                          'PrivateIp': ('Private IP address of the specified '
                                        'instance.'),
+                         'accessIPv4': ('Public IP address'),
+                         'privateIPv4': ('Private IP address'),
                          'PublicIp': ('Public IP address of the specified '
                                       'instance.')}
 
@@ -408,9 +410,9 @@ class WinServer(resource.Resource):
             #return {'Error': "flavor not found."}
 
     def _resolve_attribute(self, name):
-        if name == 'PrivateIp':
+        if name == 'privateIPv4':
             return self.private_ip
-        elif name == 'PublicIp':
+        elif name == 'accessIPv4':
             return self.public_ip
         else:
             return None
