@@ -29,9 +29,12 @@
 # Reference for:
 #  DCE/RPC and SMB.
 
-import sys
-import os
 import cmd
+import os
+import shlex
+import socket
+import subprocess
+import sys
 
 #from impacket import version
 from impacket.smbconnection import SMB_DIALECT
@@ -49,9 +52,94 @@ import random
 import string
 import time
 
+from heat.common import exception
 from heat.openstack.common import log as logging
 
 logger = logging.getLogger(__name__)
+
+
+def wait_net_service(server, port, timeout=None):
+    """Wait for network service to appear
+        @param timeout: in seconds, if None or 0 wait forever
+        @return: True of False, if timeout is None may return only True or
+                 throw unhandled network exception
+    """
+
+    s = socket.socket()
+    if timeout:
+        from time import time as now
+        # time module is needed to calc timeout shared between two exceptions
+        end = now() + timeout
+
+    while True:
+        try:
+            if timeout:
+                next_timeout = end - now()
+                if next_timeout < 0:
+                    return False
+                else:
+                    s.settimeout(next_timeout)
+
+            s.connect((server, port))
+
+        except:
+            # Handle refused connections, etc.
+            if timeout:
+                next_timeout = end - now()
+                if next_timeout < 0:
+                    return False
+                else:
+                    s.settimeout(next_timeout)
+
+            time.sleep(1)
+
+        else:
+            s.close()
+            return True
+
+
+class PsexecWrapper(object):
+    def __init__(self, username, password, address, filename,
+                 wrapper_batch_file, path="C:\\Windows"):
+        psexec = "%s/psexec.py" % os.path.dirname(__file__)
+        cmd_string = "nice python %s -path '%s' '%s':'%s'@'%s' " \
+            "'c:\\windows\\sysnative\\cmd'"
+        self._cmd = cmd_string % (psexec, path, username, password, address)
+        self._lines = "put %s\nput %s\n%s\nexit\n" % (
+            filename, wrapper_batch_file, os.path.basename(wrapper_batch_file))
+        self._psexec = None
+
+    def run_cmd(self):
+        self._psexec = subprocess.Popen(shlex.split(self._cmd),
+                                        close_fds=True,
+                                        stdin=subprocess.PIPE,
+                                        stdout=subprocess.PIPE,
+                                        stderr=subprocess.STDOUT)
+
+        self._psexec.stdin.write(self._lines)
+
+    def is_alive(self):
+        return self._psexec is not None and self._psexec.poll() is None
+
+    def exit_code(self):
+        self._raise_if_proc_running()
+        return self._psexec.returncode
+
+    def std_out(self):
+        self._raise_if_proc_running()
+        return self._psexec.stdout.readlines()
+
+    def std_err(self):
+        self._raise_if_proc_running()
+        return self._psexec.stderr.readlines()
+
+    def kill(self):
+        if not self._psexec and self._psexec.poll() is None:
+            self._psexec.kill()
+
+    def _raise_if_proc_running(self):
+        if self._psexec.poll() is None:
+            raise exception.Error("process is still running")
 
 
 class RemComMessage(Structure):
