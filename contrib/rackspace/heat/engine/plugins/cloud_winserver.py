@@ -141,7 +141,7 @@ class WinServer(server.Server):
                                                 self._process.exit_code())
             raise exception.Error(msg)
 
-        logger.info("Server resource %s configuration done" % self.resource_id)
+        logger.info("Server %s configuration completed." % self.resource_id)
         return True
 
     def _is_server_reachable(self):
@@ -228,6 +228,20 @@ class WinServer(server.Server):
             os.remove(tmp_batch_file)
         except:
             pass
+        # Stack creation timeout may result in stale batch files in tmp folder
+        # so, remove old .bat and .ps1 files from tmp folder
+        path = tempfile.gettempdir()
+        time_now = time.time()
+        for file in os.listdir(path):
+            if not file.endswith(".bat") and not file.endswith(".ps1"):
+                continue
+            try:
+                file = os.path.join(path, file)
+                # remove files older than 7200sec (2hours)
+                if time_now - os.stat(file).st_mtime > 7200:
+                    os.remove(file)
+            except Exception:
+                pass
 
     def _userdata_ps_script(self, user_data):
         # create powershell script with user_data
