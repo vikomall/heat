@@ -13,6 +13,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import copy
 import os
 import tempfile
 import time
@@ -37,6 +38,13 @@ class WinServer(server.Server):
         NAME, FLAVOR, IMAGE, USER_DATA
     ) = (
         'name', 'flavor', 'image', 'user_data'
+    )
+
+    attributes_schema = copy.deepcopy(server.Server.attributes_schema)
+    attributes_schema.update(
+        {
+            'privateIPv4': _('The private IPv4 address of the server.'),
+        }
     )
 
     def __init__(self, name, json_snippet, stack):
@@ -260,6 +268,12 @@ class WinServer(server.Server):
         batch_file.write(batch_file_command)
         batch_file.close()
         return batch_file.name
+
+    def _resolve_attribute(self, name):
+        if name == 'privateIPv4':
+            return nova_utils.get_ip(self.server, 'private', 4)
+
+        return super(WinServer, self)._resolve_attribute(name)
 
 try:
     import pyrax  # noqa

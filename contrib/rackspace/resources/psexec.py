@@ -134,7 +134,7 @@ class PsexecWrapper(object):
         return self._psexec.stderr.readlines()
 
     def kill(self):
-        if not self._psexec and self._psexec.poll() is None:
+        if self._psexec and self._psexec.poll() is None:
             self._psexec.kill()
 
     def _raise_if_proc_running(self):
