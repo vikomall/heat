@@ -74,6 +74,10 @@
 # notification module. (string value)
 #onready=<None>
 
+# Encrypt template parameters that were marked as hidden
+# before storing them in database. (boolean value)
+#encrypt_parameters=false
+
 
 #
 # Options defined in heat.common.config

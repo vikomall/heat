@@ -138,7 +138,11 @@ engine_opts = [
                       ' module with the notify() method or a shell command. '
                       ' To enable notifications with systemd, one may use'
                       ' the \'systemd-notify --ready\' shell command or'
-                      ' the \'heat.common.systemd\' notification module.'))]
+                      ' the \'heat.common.systemd\' notification module.')),
+    cfg.BoolOpt('encrypt_parameters',
+                default=False,
+                help=_('Encrypt template parameters that were marked as'
+                       ' hidden before storing them in database.'))]
 
 rpc_opts = [
     cfg.StrOpt('host',

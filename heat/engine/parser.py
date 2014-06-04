@@ -21,6 +21,7 @@ from oslo.config import cfg
 import six
 
 from heat.common import context as common_context
+from heat.common import crypt
 from heat.common import exception
 from heat.common.exception import StackValidationFailed
 from heat.common import identifier
@@ -235,9 +236,38 @@ class Stack(collections.Mapping):
     @classmethod
     def _from_db(cls, context, stack, parent_resource=None, resolve_data=True,
                  use_stored_context=False):
+        def decrypt_parameters(params, hidden_params):
+            # If parameters are encrypted, encryption function name will be
+            # stored as first element and second element would be actual
+            # encrypted parameter value
+            parameters = params['parameters']
+            for hidden_param in hidden_params:
+                if not isinstance(parameters[hidden_param], list):
+                    msg = _("Parameter %s was not encrypted.") % hidden_param
+                    LOG.info(msg)
+                    continue
+
+                decrypt_function_name = parameters[hidden_param][0]
+                decrypt_function = getattr(crypt, decrypt_function_name, None)
+                if not callable(decrypt_function):
+                    msg = _("%s is not callable.") % decrypt_function_name
+                    LOG.warn(msg)
+                    continue
+
+                decrypted_val = decrypt_function(parameters[hidden_param][1])
+                parameters[hidden_param] = strutils.safe_decode(decrypted_val)
+
+            return parameters
+
         template = Template.load(
             context, stack.raw_template_id, stack.raw_template)
-        env = environment.Environment(stack.parameters)
+        params = stack.parameters
+        hidden_params = [key for key, val in
+                         template.param_schemata().iteritems() if val.hidden]
+        if len(hidden_params) > 0:
+            params['parameters'] = decrypt_parameters(params, hidden_params)
+
+        env = environment.Environment(params)
         return cls(context, stack.name, template, env,
                    stack.id, stack.action, stack.status, stack.status_reason,
                    stack.timeout, resolve_data, stack.disable_rollback,
@@ -254,10 +284,26 @@ class Stack(collections.Mapping):
         Store the stack in the database and return its ID
         If self.id is set, we update the existing stack
         '''
+
+        def encrypt_parameters(self, params):
+            parameters = params['parameters']
+            hidden_params = [key for key, val in
+                             self.parameters.params.iteritems()
+                             if val.hidden()]
+            for param_name in hidden_params:
+                encoded_val = strutils.safe_encode(parameters[param_name])
+                parameters[param_name] = crypt.encrypt(encoded_val)
+            return parameters
+
+        params = self.env.user_env_as_dict()
+        # Encrypt parameters that were marked as hidden
+        if cfg.CONF.encrypt_parameters:
+            params['parameters'] = encrypt_parameters(self, params)
+
         s = {
             'name': self._backup_name() if backup else self.name,
             'raw_template_id': self.t.store(self.context),
-            'parameters': self.env.user_env_as_dict(),
+            'parameters': params,
             'owner_id': self.owner_id,
             'username': self.context.username,
             'tenant': self.tenant_id,

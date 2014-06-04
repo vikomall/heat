@@ -250,3 +250,49 @@ class TestHeatMigrations(test_migrations.BaseMigrationTestCase,
 
     def _check_040(self, engine, data):
         self.assertColumnNotExists(engine, 'software_deployment', 'signal_id')
+
+    def _pre_upgrade_045(self, engine):
+        raw_template = get_table(engine, 'raw_template')
+        templ = '''{
+        "HeatTemplateFormatVersion" : "2012-12-12",
+        "Parameters" : {
+          "foo" : { "Type" : "String" },
+          "blarg" : { "Type" : "String", "Default": "quux" }
+          }
+        }'''
+        #templ = {'heat_template_version': '2013-05-23',
+                 #'parameters': {
+                     #'foo': {
+                         #'type': 'string',
+                         #'hidden': 'true'
+                     #}
+                 #},
+                 #'resources': { }                 
+                #}
+        temp = [dict(id=4, template=str(templ))]
+        engine.execute(raw_template.insert(), temp)
+
+        user = [dict(id=4, username='test', password='notthis',
+                     tenant='mine', auth_url='bla',
+                     tenant_id=str(uuid.uuid4()),
+                     trust_id='',
+                     trustor_user_id='')]
+
+        stack = get_table(engine, 'stack')
+        engine.execute(stack.delete())
+        stack_ids = ['967aaefb-152e-405d-b13a-35d4c816390a',
+                     '9e9deba9-a303-4f29-84d3-c8165647c47b',
+                     '9a4bd1ec-8b21-46cd-964a-f66cb1cfa2fd']
+        data = [dict(id=ll_id, name='fruity',
+                     raw_template_id=4,
+                     user_creds_id=user[0]['id'],
+                     username='test', disable_rollback=True,
+                     parameters='{}',
+                     raw_template=temp)
+                for ll_id in stack_ids]
+
+        engine.execute(stack.insert(), data)
+        return data
+
+    def _check_045(self, engine, data):
+        self.assertColumnExists(engine, 'stack_lock', 'stack_id')
